@@ -1,0 +1,13 @@
+#ifndef IO_EZFO_H
+#define IO_EZFO_H
+
+#pragma GCC system_header
+
+#include "../sys.h"
+
+bool _EZFO_startUp(void);
+bool _EZFO_readSectors(u32 address, u32 count, void* buffer);
+bool _EZFO_writeSectors(u32 address, u32 count, const void* buffer);
+void _EZFO_reboot(void);  /* SetRompage(BOOTLOADER)+SoftReset -> kernel menu; no return */
+
+#endif /* IO_EZFO_H */

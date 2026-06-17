@@ -1,0 +1,46 @@
+# Build temporaries
+build/
+*.elf
+*.map
+*.o
+*.d
+
+# Save backups / dumps you might drop in while testing
+*.sav
+*.sav[0-9]
+*.ss[0-9]
+*.bak
+
+# Internal dev/session notes — kept local, NOT published
+docs/HANDOFF.md
+docs/SESSION_SUMMARY.md
+
+# Pret decomp source is reference-only and must NOT be bundled (read upstream instead)
+reference/pokeemerald/
+reference/pokeruby/
+
+# Editor noise
+.DS_Store
+.vscode/
+*.swp
+
+# Runtime debug log written on-device / by the self-test
+pokelinksim_log.txt
+
+# Compiled host-test binary (tests/host_test.c is tracked; the binary is not)
+/tests/host_test
+
+# NOTE: PokeLinkSim.gba is intentionally NOT ignored — commit the built ROM.
+
+# Source art for icon generation (generated into source/mon_icons.c, which IS committed)
+Gen 3 Sprite Pack V1/
+
+# Cached decomp name lists for gen_names.py (generated into source/gen3_names.c, committed)
+tools/_namecache/
+
+# Decomp data source for gen_data.py (generated into source/data_tables.c, committed)
+reference/pokeemerald_data/
+
+# Generated icon art (ripped sprite pack) — local personal build only, NEVER commit
+/source/mon_icons_data.h
+/Gen 3 Sprite Pack V1/
