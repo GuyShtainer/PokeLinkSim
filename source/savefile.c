@@ -489,12 +489,14 @@ SfStatus sf_mix_bidir(const char* pathA, Gen3Version verA, uint8_t omitA,
 
 /* ===================== genuine trade ==================================== */
 
-/* Read `path`, splice `foreign` (100-byte mon) into party slot `pslot`, apply the
- * genuine receive effects, and validate the whole image; if do_commit, back up
- * then verified-write it. Reuses the savefile work buffer + s_sb1 scratch. */
-static SfStatus trade_one_side(const char* path, int pslot, const uint8_t* foreign,
-                               bool do_commit, uint8_t* work,
-                               uint16_t* recv_final, bool* recv_evo) {
+/* Read `path`, splice `foreign` into `loc` (party slot or PC box), apply the genuine
+ * receive effects, and validate the whole image; if do_commit, back up then
+ * verified-write it. `has_tail` says whether foreign[80..99] is a real party tail
+ * (party source) or must be computed for a party destination. Reuses the savefile
+ * work buffer + s_sb1 scratch. */
+static SfStatus trade_one_side_loc(const char* path, const TradeLoc* loc, const uint8_t* foreign,
+                                   bool has_tail, bool do_commit, uint8_t* work,
+                                   uint16_t* recv_final, bool* recv_evo) {
   uint32_t size = 0;
   SfStatus st = sf_read_full(path, work, G3_SAVE_FILE_SIZE, &size);
   if (st != SF_OK) return st;
@@ -504,12 +506,12 @@ static SfStatus trade_one_side(const char* path, int pslot, const uint8_t* forei
   if (gen3_read_saveblock1(work, slot, s_sb1) != G3_SAVEBLOCK1_BYTES) return SF_ERR_LAYOUT;
   TradeGame g = trade_detect_game(work, slot, s_sb1);
   if (g == TG_UNKNOWN) return SF_ERR_LAYOUT;
-  if (!trade_sections_safe(work, slot)) return SF_ERR_LAYOUT;     /* zero-padding precond */
-  if (!trade_place_mon(work, slot, g, pslot, foreign)) return SF_ERR_LAYOUT;
-  if (!trade_apply_received(work, slot, g, pslot, recv_final, recv_evo)) return SF_ERR_LAYOUT;
+  if (!trade_sections_safe_loc(work, slot, loc)) return SF_ERR_LAYOUT; /* zero-padding precond */
+  if (!trade_receive_at(work, slot, g, loc, foreign, has_tail, recv_final, recv_evo))
+    return SF_ERR_LAYOUT;
   /* corruption guard: the whole image must still validate */
   if (!gen3_verify_full_checksums(work, slot, NULL)) return SF_ERR_VERIFY;
-  if (!trade_sections_safe(work, slot)) return SF_ERR_VERIFY;
+  if (!trade_sections_safe_loc(work, slot, loc)) return SF_ERR_VERIFY;
   if (do_commit) {
     char bak[SF_PATH_MAX];
     st = sf_backup(path, bak, sizeof(bak));
@@ -521,9 +523,12 @@ static SfStatus trade_one_side(const char* path, int pslot, const uint8_t* forei
   return SF_OK;
 }
 
-/* Extract one save's chosen party mon (100 B) + its game + species. */
-static SfStatus trade_extract(const char* path, int pslot, uint8_t* work,
-                              uint8_t out_mon[100], TradeGame* out_game, uint16_t* out_species) {
+/* Extract one save's chosen mon (party slot or PC box) + game + species. Fills the
+ * verbatim 100-byte record for a party loc (has_tail=true) or the 80-byte core for a
+ * box loc (has_tail=false). */
+static SfStatus trade_extract_loc(const char* path, const TradeLoc* loc, uint8_t* work,
+                                  uint8_t out_rec[100], bool* out_has_tail,
+                                  TradeGame* out_game, uint16_t* out_species) {
   uint32_t size = 0;
   SfStatus st = sf_read_full(path, work, G3_SAVE_FILE_SIZE, &size);
   if (st != SF_OK) return st;
@@ -532,38 +537,39 @@ static SfStatus trade_extract(const char* path, int pslot, uint8_t* work,
   int slot = info.slot;
   if (gen3_read_saveblock1(work, slot, s_sb1) != G3_SAVEBLOCK1_BYTES) return SF_ERR_LAYOUT;
   TradeGame g = trade_detect_game(work, slot, s_sb1);
-  TradeLayout L;
-  if (!trade_layout(g, &L)) return SF_ERR_LAYOUT;
-  if (pslot < 0 || pslot >= 6) return SF_ERR_LAYOUT;
-  memcpy(out_mon, s_sb1 + L.party_off + (uint32_t)pslot * 100, 100);
-  PkMon p;
-  if (!pk_decode_mon(out_mon, true, &p) || p.species == 0) return SF_ERR_PARSE;  /* empty slot */
-  if (p.isEgg || p.isBadEgg) return SF_ERR_PARSE;   /* never clone an egg/bad egg */
-  *out_game = g; *out_species = p.species;
+  if (g == TG_UNKNOWN) return SF_ERR_LAYOUT;
+  if (!trade_read_core(work, slot, g, loc, out_rec, out_has_tail, out_species))
+    return SF_ERR_PARSE;   /* empty slot / egg / bad layout */
+  *out_game = g;
   return SF_OK;
 }
 
-SfStatus sf_trade(const char* pathA, int pslotA, const char* pathB, int pslotB,
+static int loc_tag(const TradeLoc* loc) { return loc->kind == TLOC_BOX ? 100 + loc->box : loc->pslot; }
+
+SfStatus sf_trade(const char* pathA, const TradeLoc* locA,
+                  const char* pathB, const TradeLoc* locB,
                   bool commit, uint8_t* work, TradeResult* out) {
   static uint8_t EWRAM_BSS monA[100], monB[100];
+  bool tailA = false, tailB = false;
   TradeGame gA, gB; uint16_t givenA, givenB;
   SfStatus st;
 
-  st = trade_extract(pathA, pslotA, work, monA, &gA, &givenA);
+  st = trade_extract_loc(pathA, locA, work, monA, &tailA, &gA, &givenA);
   if (st != SF_OK) { log_line("trade: extract A failed (%s)", sf_status_str(st)); return st; }
-  st = trade_extract(pathB, pslotB, work, monB, &gB, &givenB);
+  st = trade_extract_loc(pathB, locB, work, monB, &tailB, &gB, &givenB);
   if (st != SF_OK) { log_line("trade: extract B failed (%s)", sf_status_str(st)); return st; }
 
   if (out) { out->gameA = gA; out->gameB = gB; out->givenA = givenA; out->givenB = givenB; }
-  log_line("=== TRADE %s[%s]#%d <-> %s[%s]#%d (%s) ===",
-           pathA, trade_game_name(gA), pslotA, pathB, trade_game_name(gB), pslotB,
+  log_line("=== TRADE %s[%s]@%d <-> %s[%s]@%d (%s) ===",
+           pathA, trade_game_name(gA), loc_tag(locA), pathB, trade_game_name(gB), loc_tag(locB),
            commit ? "commit" : "dry-run");
 
-  /* --- dry-run BOTH sides first (validate spliced images; nothing written) --- */
+  /* --- dry-run BOTH sides first (validate spliced images; nothing written).
+   * A receives B's mon at locA; B receives A's mon at locB. --- */
   uint16_t aF, bF; bool aE, bE;
-  st = trade_one_side(pathA, pslotA, monB, false, work, &aF, &aE);
+  st = trade_one_side_loc(pathA, locA, monB, tailB, false, work, &aF, &aE);
   if (st != SF_OK) { log_line("trade: dry-run A failed (%s)", sf_status_str(st)); return st; }
-  st = trade_one_side(pathB, pslotB, monA, false, work, &bF, &bE);
+  st = trade_one_side_loc(pathB, locB, monA, tailA, false, work, &bF, &bE);
   if (st != SF_OK) { log_line("trade: dry-run B failed (%s)", sf_status_str(st)); return st; }
   if (out) { out->a_recv_final = aF; out->b_recv_final = bF; out->a_evolved = aE; out->b_evolved = bE; }
   log_line("trade: dry-run OK (A gets %u%s, B gets %u%s)", aF, aE ? " evo" : "", bF, bE ? " evo" : "");
@@ -571,9 +577,9 @@ SfStatus sf_trade(const char* pathA, int pslotA, const char* pathB, int pslotB,
   if (!commit) return SF_OK;
 
   /* --- commit BOTH (each backed up first, verified write) --- */
-  st = trade_one_side(pathA, pslotA, monB, true, work, &aF, &aE);
+  st = trade_one_side_loc(pathA, locA, monB, tailB, true, work, &aF, &aE);
   if (st != SF_OK) return st;
-  st = trade_one_side(pathB, pslotB, monA, true, work, &bF, &bE);
+  st = trade_one_side_loc(pathB, locB, monA, tailA, true, work, &bF, &bE);
   if (st != SF_OK) { log_line("trade: B write failed AFTER A committed (A has .bak; mon may be cloned)"); return st; }
   log_line("trade: COMMIT OK - both saves updated");
   return SF_OK;

@@ -88,14 +88,16 @@ SfStatus sf_mix_bidir(const char* pathA, Gen3Version verA, uint8_t omitA,
                       const SbPartyChoice* ovrA, const SbPartyChoice* ovrB,
                       uint8_t* work, MixStats* statsAtoB, MixStats* statsBtoA);
 
-/* Genuine 1-for-1 trade between two saves (any Gen-3 game incl. FRLG): party slot
- * `pslotA` of A swaps with party slot `pslotB` of B. Each received mon keeps its
- * OT (outsider => EXP boost) but gets friendship reset, trade evolution, the
- * receiver's Pokedex seen+caught, and a trade-counter bump. `commit == false` is
- * a DRY RUN (validates both spliced images, nothing written); `commit == true`
- * backs up each save (immutable .bak) then writes it with the verified-write path.
- * Omega-only at the call site. `work` is the caller's 128 KiB buffer; `out`
- * (optional) reports what each side gave/received. */
+/* Genuine 1-for-1 trade between two saves (any Gen-3 game incl. FRLG): the mon at
+ * `locA` of A swaps with the mon at `locB` of B. Each endpoint may be a live party
+ * slot OR a PC-box slot (see TradeLoc), in any combination; the received mon lands
+ * back in the slot its owner gave from. Each received mon keeps its OT (outsider =>
+ * EXP boost) but gets friendship reset, trade evolution, the receiver's Pokedex
+ * seen+caught, and a trade-counter bump. `commit == false` is a DRY RUN (validates
+ * both spliced images, nothing written); `commit == true` backs up each save
+ * (immutable .bak) then writes it with the verified-write path. Omega-only at the
+ * call site. `work` is the caller's 128 KiB buffer; `out` (optional) reports what
+ * each side gave/received. */
 typedef struct {
   TradeGame gameA, gameB;
   uint16_t  givenA, givenB;            /* species each side handed over          */
@@ -103,7 +105,8 @@ typedef struct {
   bool      a_evolved, b_evolved;      /* did the received mon trade-evolve?      */
 } TradeResult;
 
-SfStatus sf_trade(const char* pathA, int pslotA, const char* pathB, int pslotB,
+SfStatus sf_trade(const char* pathA, const TradeLoc* locA,
+                  const char* pathB, const TradeLoc* locB,
                   bool commit, uint8_t* work, TradeResult* out);
 
 #endif /* SAVEFILE_H */

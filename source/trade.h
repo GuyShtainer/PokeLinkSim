@@ -59,4 +59,39 @@ bool trade_apply_received(uint8_t* save, int slot, TradeGame g, int pslot,
  * recompute checksums. Returns false on a structural problem. */
 bool trade_place_mon(uint8_t* save, int slot, TradeGame g, int pslot, const uint8_t* mon100);
 
+/* ---- trade endpoints that can be a live party slot OR a PC-box slot ----
+ * The exchanged unit is the self-contained 80-byte mon "core" (byte-identical in
+ * box and party records); a PARTY destination additionally gets the 20-byte
+ * plaintext battle-stats tail (level + the 6 stats, computed for a box source). */
+typedef enum { TLOC_PARTY = 0, TLOC_BOX } TradeLocKind;
+typedef struct {
+  uint8_t kind;    /* TLOC_PARTY | TLOC_BOX                            */
+  uint8_t pslot;   /* party slot 0..5            (kind == TLOC_PARTY)  */
+  uint8_t box;     /* PC box 0..13               (kind == TLOC_BOX)    */
+  uint8_t bslot;   /* PC box slot 0..29          (kind == TLOC_BOX)    */
+} TradeLoc;
+
+/* Like trade_sections_safe, but also covers the PC-storage section(s) a box trade
+ * will rewrite. For a party loc it's exactly trade_sections_safe. */
+bool trade_sections_safe_loc(const uint8_t* save, int slot, const TradeLoc* loc);
+
+/* Read the giveable mon at `loc`. A party loc fills the verbatim 100-byte record
+ * (*out_has_tail=true); a box loc fills the 80-byte core and zeroes [80..99]
+ * (*out_has_tail=false). Rejects empty slots and eggs/bad-eggs. Out-pointers may
+ * be NULL. Returns false on a structural problem. */
+bool trade_read_core(const uint8_t* save, int slot, TradeGame g, const TradeLoc* loc,
+                     uint8_t out_rec[100], bool* out_has_tail, uint16_t* out_species);
+
+/* Place `foreign` at `loc` and apply the genuine "received in a trade" effects
+ * (friendship reset, trade evolution, receiver Pokedex seen+caught, trade-counter
+ * bump), recomputing every touched section. `foreign_has_tail` says whether
+ * foreign[80..99] is a real party battle-stats tail (party source) or must be
+ * computed when the destination is a party slot (box source). The caller MUST have
+ * confirmed trade_sections_safe_loc. Friendship/evolution are applied to the mon's
+ * own self-contained core, so a box record that straddles a section boundary is
+ * handled correctly. Returns false on a structural problem. */
+bool trade_receive_at(uint8_t* save, int slot, TradeGame g, const TradeLoc* loc,
+                      const uint8_t foreign[100], bool foreign_has_tail,
+                      uint16_t* out_final_species, bool* out_evolved);
+
 #endif /* TRADE_H */

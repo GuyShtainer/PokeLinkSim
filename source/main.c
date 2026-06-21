@@ -1240,8 +1240,10 @@ static bool trade_browse_pick(const char* title, const char* exclude, char* out_
   }
 }
 
-/* Pick one party Pokemon (raw slot 0..5; eggs/empties not selectable). */
-static bool trade_pick_mon(const char* path, const BrEntry* e, int* out_pslot) {
+/* Pick one Pokemon to trade -- from the live party OR any of the 14 PC boxes.
+ * Shoulder L/R flips between the party row and the PC-box grid (D-pad <> changes
+ * box at the grid edges). Eggs/empties aren't selectable. Fills `out_loc`. */
+static bool trade_pick_mon(const char* path, const BrEntry* e, TradeLoc* out_loc) {
   u32 sz = load_path(path);
   Gen3SaveInfo info;
   if (!sz || !gen3_parse(g_save, sz, &info) || !info.sb1_ok) {
@@ -1262,45 +1264,98 @@ static bool trade_pick_mon(const char* path, const BrEntry* e, int* out_pslot) {
              g_party[i].species && !g_party[i].isEgg && !g_party[i].isBadEgg;
     if (occ[i] && first < 0) first = i;
   }
-  if (first < 0) {
-    show_msg("No tradeable Pokemon", e->trainer); ui_text(6, 100, UI_DIM, "B = back"); wait_keys(KEY_B);
-    return false;
-  }
   char owner[20]; siprintf(owner, "%s %s", e->trainer, trade_tag(e));
-  int cur = first; bool dirty = true;
+
+  int view = (first < 0) ? TP_PC : TP_PARTY;   /* no party mon -> open the PC straight away */
+  int cur  = (first < 0) ? 0 : first;          /* party cursor                              */
+  int curbox = 0, bcur = 0;
+  if (view == TP_PC) read_box_into(g_save, slot, curbox);
+  bool dirty = true;
   while (1) {
     if (dirty) {
       ui_clear();
       ui_text(2, 0, UI_TITLE, "PICK A POKEMON");
       { char ob[16]; ui_truncate(ob, owner, 14); ui_text(140, 0, UI_DIM, ob); }
-      for (int i = 0; i < 6; i++) {
-        int x = 8 + i * 38, y = 40;
-        if (i == cur) m3_frame(x - 2, y - 2, x + 34, y + 44, UI_TITLE);
-        if (!occ[i]) continue;
-        draw_mon32(x, y, g_party[i].species, false);
-        char lab[8]; siprintf(lab, "Lv%d", g_party[i].level);
-        ui_text(x, y + 34, UI_TEXT, lab);
+      if (view == TP_PARTY) {
+        for (int i = 0; i < 6; i++) {
+          int x = 8 + i * 38, y = 40;
+          if (i == cur) m3_frame(x - 2, y - 2, x + 34, y + 44, UI_TITLE);
+          if (!occ[i]) continue;
+          draw_mon32(x, y, g_party[i].species, false);
+          char lab[8]; siprintf(lab, "Lv%d", g_party[i].level);
+          ui_text(x, y + 34, UI_TEXT, lab);
+        }
+        const PkMon* f = occ[cur] ? &g_party[cur] : NULL;
+        if (f) {
+          char l[40];
+          ui_text(8, 100, UI_TITLE, gen3_species_name(f->species));
+          siprintf(l, "Lv%d  %s", f->level, pk_nature_name(f->nature));
+          ui_text(8, 112, UI_DIM, l);
+        } else {
+          ui_text(8, 100, UI_DIM, "(no party) - L/R opens PC");
+        }
+        ui_text(2, FOOT_Y, UI_DIM, "A pick  L/R PC  SEL stats  B");
+      } else {
+        char line[40];
+        siprintf(line, "PC BOX %d", curbox + 1);
+        ui_text(2, 18, UI_TITLE, line);
+        for (int sl = 0; sl < G3_IN_BOX; sl++) {     /* 6x5 box grid */
+          int col = sl % 6, row = sl / 6;
+          int x = 8 + col * 22, y = 32 + row * 18;
+          if (sl == bcur) m3_frame(x - 1, y - 1, x + 17, y + 17, UI_TITLE);
+          if (g_boxmons[sl].species) draw_mon16(x, y, g_boxmons[sl].species);
+        }
+        const PkMon* f = g_boxmons[bcur].species ? &g_boxmons[bcur] : NULL;
+        if (f) {
+          ui_text(8, 132, UI_TITLE, gen3_species_name(f->species));
+          siprintf(line, "Lv%d  %s", f->level, pk_nature_name(f->nature));
+          ui_text(8, 144, UI_DIM, line);
+        } else {
+          ui_text(8, 132, UI_DIM, "(empty)");
+        }
+        ui_text(2, FOOT_Y, UI_DIM, "A pick  L/R party  <>box  SEL");
       }
-      const PkMon* f = occ[cur] ? &g_party[cur] : NULL;
-      if (f) {
-        char l[40];
-        ui_text(8, 100, UI_TITLE, gen3_species_name(f->species));
-        siprintf(l, "Lv%d  %s", f->level, pk_nature_name(f->nature));
-        ui_text(8, 112, UI_DIM, l);
-      }
-      ui_text(2, FOOT_Y, UI_DIM, "A pick  SEL stats  B back");
       dirty = false;
     }
     vsync();
     u16 mv  = key_repeat(KEY_LEFT | KEY_RIGHT | KEY_UP | KEY_DOWN);
-    u16 hit = key_hit(KEY_A | KEY_B | KEY_SELECT);
+    u16 hit = key_hit(KEY_A | KEY_B | KEY_SELECT | KEY_L | KEY_R);
     if (!mv && !hit) continue;
     dirty = true;
-    if (hit & KEY_B) return false;
-    else if (hit & KEY_A) { if (occ[cur]) { *out_pslot = cur; return true; } }
-    else if (hit & KEY_SELECT) { if (occ[cur]) { render_mon_stats(&g_party[cur], owner, true); wait_keys(KEY_B | KEY_SELECT); } }
-    else if (mv & (KEY_LEFT | KEY_UP))  { for (int i = cur - 1; i >= 0; i--) if (occ[i]) { cur = i; break; } }
-    else if (mv & (KEY_RIGHT | KEY_DOWN)) { for (int i = cur + 1; i < 6; i++)  if (occ[i]) { cur = i; break; } }
+
+    if (view == TP_PARTY) {
+      if (hit & KEY_B) return false;
+      else if (hit & (KEY_L | KEY_R)) { read_box_into(g_save, slot, curbox); bcur = 0; view = TP_PC; }
+      else if (hit & KEY_A) { if (occ[cur]) { out_loc->kind = TLOC_PARTY; out_loc->pslot = (uint8_t)cur;
+                                              out_loc->box = 0; out_loc->bslot = 0; return true; }
+                              else { read_box_into(g_save, slot, curbox); bcur = 0; view = TP_PC; } }
+      else if (hit & KEY_SELECT) { if (occ[cur]) { render_mon_stats(&g_party[cur], owner, true); wait_keys(KEY_B | KEY_SELECT); } }
+      else if (mv & (KEY_LEFT | KEY_UP))    { for (int i = cur - 1; i >= 0; i--) if (occ[i]) { cur = i; break; } }
+      else if (mv & (KEY_RIGHT | KEY_DOWN)) { for (int i = cur + 1; i < 6; i++)  if (occ[i]) { cur = i; break; } }
+    } else {                                    /* PC box view */
+      if (hit & (KEY_B | KEY_L | KEY_R)) {
+        if (first < 0) { if (hit & KEY_B) return false; }   /* no party to return to */
+        else view = TP_PARTY;
+      }
+      else if (hit & KEY_A) {
+        if (g_boxmons[bcur].species) { out_loc->kind = TLOC_BOX; out_loc->box = (uint8_t)curbox;
+                                       out_loc->bslot = (uint8_t)bcur; out_loc->pslot = 0; return true; }
+      }
+      else if (hit & KEY_SELECT) { if (g_boxmons[bcur].species) { render_mon_stats(&g_boxmons[bcur], owner, true); wait_keys(KEY_B | KEY_SELECT); } }
+      else {
+        int col = bcur % 6, row = bcur / 6;
+        if (mv & KEY_LEFT) {
+          if (col > 0) bcur--;
+          else { curbox = (curbox + G3_TOTAL_BOXES - 1) % G3_TOTAL_BOXES;
+                 read_box_into(g_save, slot, curbox); bcur = row * 6 + 5; }
+        } else if (mv & KEY_RIGHT) {
+          if (col < 5) bcur++;
+          else { curbox = (curbox + 1) % G3_TOTAL_BOXES;
+                 read_box_into(g_save, slot, curbox); bcur = row * 6; }
+        } else if (mv & KEY_UP)   { bcur = (row > 0) ? bcur - 6 : bcur + 24; }
+        else if (mv & KEY_DOWN)   { bcur = (row < 4) ? bcur + 6 : bcur - 24; }
+      }
+    }
   }
 }
 
@@ -1330,12 +1385,12 @@ static void run_trade_flow(void) {
   }
   char pathA[PATH_MAX], pathB[PATH_MAX];
   static BrEntry eA, eB;
-  int pslotA = 0, pslotB = 0;
+  TradeLoc locA = {0,0,0,0}, locB = {0,0,0,0};
   g_trade_mode = 1;
   bool ok = trade_browse_pick("TRADE: pick SAVE 1", NULL, pathA, &eA) &&
-            trade_pick_mon(pathA, &eA, &pslotA) &&
+            trade_pick_mon(pathA, &eA, &locA) &&
             trade_browse_pick("TRADE: pick SAVE 2", pathA, pathB, &eB) &&
-            trade_pick_mon(pathB, &eB, &pslotB);
+            trade_pick_mon(pathB, &eB, &locB);
   g_trade_mode = 0;
   if (!ok) return;
   if (strcmp(pathA, pathB) == 0) {
@@ -1344,9 +1399,9 @@ static void run_trade_flow(void) {
   }
 
   show_msg("Checking trade...", "(nothing written)");
-  log_line("=== TRADE dry-run: %s#%d <-> %s#%d ===", pathA, pslotA, pathB, pslotB);
+  log_line("=== TRADE dry-run: %s <-> %s ===", pathA, pathB);
   TradeResult tr;
-  SfStatus st = sf_trade(pathA, pslotA, pathB, pslotB, false, g_save, &tr);
+  SfStatus st = sf_trade(pathA, &locA, pathB, &locB, false, g_save, &tr);
   log_flush_to_sd(LOG_PATH);
   if (st != SF_OK) { result_screen("TRADE CHECK FAILED", UI_WARN, sf_status_str(st), "Nothing written."); return; }
 
@@ -1355,7 +1410,7 @@ static void run_trade_flow(void) {
   trade_animation(tr.givenA, tr.givenB);       /* before the write (ROM mapped) */
   show_msg("Trading (writing both)...", NULL);
   log_line("=== TRADE commit ===");
-  st = sf_trade(pathA, pslotA, pathB, pslotB, true, g_save, &tr);   /* silent write */
+  st = sf_trade(pathA, &locA, pathB, &locB, true, g_save, &tr);   /* silent write */
   log_line("trade commit: %s", st == SF_OK ? "OK" : sf_status_str(st));
   log_flush_to_sd(LOG_PATH);
   if (st == SF_OK) {

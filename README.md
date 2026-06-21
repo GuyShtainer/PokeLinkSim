@@ -30,11 +30,14 @@ results back — every write goes through an immutable `.bak` backup + verified 
 **Working and hardware-validated** on a Game Boy Advance SP + EZ-Flash Omega DE:
 both **Record Mixing** (bidirectional secret-base merge with a team picker) and
 **genuine 1-for-1 trading** run end-to-end on real hardware, reading and writing
-real `.sav` files on the microSD. Builds clean; the pure-C cores are covered by
+real `.sav` files on the microSD. Both features can pull Pokémon from the **live
+party or any of the 14 PC boxes** (press **L/R** to switch) — trading a PC mon and
+a party mon is hardware-validated. Builds clean; the pure-C cores are covered by
 PC-runnable unit tests (`tests/host_test.c`).
 
 > **Future work**
-> - Trade Pokémon to/from a **PC** (not just cart-to-cart on the SD card).
+> - Trade Pokémon to/from a **computer** over a link (not just cart-to-cart on the
+>   SD card). The in-game **PC boxes** are already supported on both sides.
 
 **This build: graphical multi-panel browser + bidirectional mix with team picker.**
 A bitmap (GBA Mode 3) UI with filled panels and a highlighted selection. You

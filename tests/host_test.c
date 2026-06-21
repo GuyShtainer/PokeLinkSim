@@ -18,6 +18,7 @@
 #include "record_mix.h"
 #include "team_prefs.h"
 #include "gen3_mon.h"
+#include "gen3_box.h"
 #include "trade.h"
 #include "data_tables.h"
 
@@ -449,6 +450,59 @@ static void test_trade_swap(void) {
   printf("TRADE SWAP TESTS PASSED\n");
 }
 
+/* Trade to/from a PC box on a real fixture. Proves: writing a mon into a box slot
+ * (including one whose 80 bytes STRADDLE a PC-storage section boundary) leaves the
+ * whole save fully checksum-valid (the corruption guard over PC sections 5..13), the
+ * mon reads back, and the box-core -> party tail synthesis matches pk_resolve. */
+static void test_trade_box(void) {
+  static uint8_t buf[G3_SAVE_FILE_SIZE];
+  static uint8_t sb1[G3_SAVEBLOCK1_BYTES];
+  static uint8_t give[100], scratch[100];
+  const char* path = "fixtures/POKEMON_EMER_BPEE00.sav";
+  FILE* f = fopen(path, "rb");
+  if (!f) { printf("  (box fixture absent; box-trade skipped)\n"); return; }
+  size_t n = fread(buf, 1, sizeof(buf), f); fclose(f);
+  Gen3SaveInfo info; assert(gen3_parse(buf, (uint32_t)n, &info) && info.sb1_ok);
+  int slot = info.slot;
+  assert(gen3_read_saveblock1(buf, slot, sb1) == G3_SAVEBLOCK1_BYTES);
+  TradeGame g = trade_detect_game(buf, slot, sb1); TradeLayout L; assert(trade_layout(g, &L));
+  memcpy(give, sb1 + L.party_off, 100);          /* a self-contained party mon to give */
+  PkMon gp; assert(pk_decode_mon(give, true, &gp));
+
+  /* box 1, slot 19: PC offset 3924, so its 80 bytes straddle sections 5 and 6. */
+  TradeLoc bx = { TLOC_BOX, 0, 1, 19 };
+  assert(trade_sections_safe_loc(buf, slot, &bx));
+  uint16_t fin; bool evo;
+  assert(trade_receive_at(buf, slot, g, &bx, give, true, &fin, &evo));
+  assert(gen3_verify_full_checksums(buf, slot, NULL));     /* corruption guard */
+  assert(trade_sections_safe_loc(buf, slot, &bx));
+
+  uint16_t rsp; bool tail;
+  assert(trade_read_core(buf, slot, g, &bx, scratch, &tail, &rsp));
+  assert(!tail && rsp == fin);                             /* reads back across 5/6 */
+
+  /* box-core -> PARTY tail synthesis (has_tail=false): the synthesized plaintext
+   * tail must equal pk_resolve of the same core (validates the 0x54/0x58.. layout). */
+  f = fopen(path, "rb"); assert(f); n = fread(buf, 1, sizeof(buf), f); fclose(f);
+  assert(gen3_parse(buf, (uint32_t)n, &info) && info.sb1_ok); slot = info.slot;
+  assert(gen3_read_saveblock1(buf, slot, sb1) == G3_SAVEBLOCK1_BYTES);
+  memcpy(give, sb1 + L.party_off, 100);
+  TradeLoc pl = { TLOC_PARTY, 0, 0, 0 };
+  uint16_t f2; bool e2;
+  assert(trade_receive_at(buf, slot, g, &pl, give, /*has_tail=*/false, &f2, &e2));
+  assert(gen3_verify_full_checksums(buf, slot, NULL));
+  assert(gen3_read_saveblock1(buf, slot, sb1) == G3_SAVEBLOCK1_BYTES);
+  const uint8_t* rec = sb1 + L.party_off;
+  PkMon ap; assert(pk_decode_mon(rec, true, &ap));         /* reads synthesized tail */
+  PkMon bp; assert(pk_decode_mon(rec, false, &bp)); pk_resolve(&bp);  /* from the core */
+  assert(ap.species == f2 && ap.level == bp.level);
+  for (int s = 0; s < 6; s++) assert(ap.stats[s] == bp.stats[s]);
+
+  printf("  box1/slot19 (straddles sec5/6) write+read OK sp%u; box->party tail==pk_resolve Lv%u\n",
+         fin, ap.level);
+  printf("TRADE BOX TESTS PASSED\n");
+}
+
 static void test_party(void) {
   static uint8_t sb1[G3_SAVEBLOCK1_BYTES];
 
@@ -817,6 +871,7 @@ int main(void) {
   test_fixtures();
   test_trade_apply();
   test_trade_swap();
+  test_trade_box();
 
   printf("ALL HOST ASSERTS PASSED\n");
   return 0;
