@@ -49,9 +49,12 @@
 #include "data_tables.h"  /* pk_nature_name */
 #include "sfx.h"          /* PSG jingles (Phase 3) */
 
-#define LOG_PATH    "/pokelinksim_log.txt"
-#define PREFS_PATH  "/pokelinksim_teams.json"
-#define CONFIG_PATH "/pokelinksim.ini"
+/* All app files live in one folder (created at startup) so the SD root stays tidy.
+ * Put PokeLinkSim.gba in /pokelinksim/ too and everything sits together. */
+#define APP_DIR     "/pokelinksim"
+#define LOG_PATH    APP_DIR "/log.txt"
+#define PREFS_PATH  APP_DIR "/teams.json"
+#define CONFIG_PATH APP_DIR "/settings.ini"
 #define BR_MAX    128
 #define BR_NAME   64
 #define PATH_MAX  256
@@ -1473,7 +1476,7 @@ static void run_trade_flow(void) {
 
 /* ===================== main ============================================= */
 
-/* Settings: toggle animations / sound / quick-mix; persisted to /pokelinksim.ini. */
+/* Settings: toggle animations / sound / quick-mix; persisted to /pokelinksim/settings.ini. */
 static void app_settings(void) {
   int sel = 0;
   bool dirty = true;
@@ -1589,6 +1592,21 @@ int main(void) {
   FRESULT fr = f_mount(&fs, "", 1);
   if (fr != FR_OK) { log_line("f_mount failed (fr=%d)", fr); halt_msg("SD mount failed!"); }
   log_line("SD mounted OK");
+
+  /* Keep the SD root tidy: all app files live in APP_DIR (created if missing). */
+  f_mkdir(APP_DIR);                 /* FR_EXIST when it already exists -- fine */
+
+  /* The log APPENDS across runs; stamp a dated banner so each session is dated. */
+  {
+    GbaRtcTime t;
+    log_line(" ");
+    if (gba_rtc_get(&t))
+      log_line("===== SESSION %04u-%02u-%02u %02u:%02u:%02u =====",
+               (unsigned)t.year, (unsigned)t.month, (unsigned)t.day,
+               (unsigned)t.hour, (unsigned)t.minute, (unsigned)t.second);
+    else
+      log_line("===== SESSION (RTC unavailable) =====");
+  }
 
   tp_init(PREFS_PATH);              /* load remembered secret-base selections */
   log_line("team prefs loaded");

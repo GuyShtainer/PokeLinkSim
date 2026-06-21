@@ -73,14 +73,22 @@ void log_line(const char* fmt, ...) {
   s_buf[s_len] = 0;
 }
 
+/* APPEND the buffered lines to the SD log (never truncate, so history across runs
+ * is preserved), then clear the in-memory buffer so the next flush only writes the
+ * new lines (no duplication). Open-always + seek-to-EOF is FatFs-version-agnostic. */
 int log_flush_to_sd(const char* path) {
+  if (s_len == 0) return 0;                       /* nothing new to append */
   FIL f;
-  FRESULT fr = f_open(&f, path, FA_WRITE | FA_CREATE_ALWAYS);
+  FRESULT fr = f_open(&f, path, FA_WRITE | FA_OPEN_ALWAYS);
   if (fr != FR_OK) return (int)fr;
+  fr = f_lseek(&f, f_size(&f));                   /* append at end of file */
+  if (fr != FR_OK) { f_close(&f); return (int)fr; }
   UINT bw = 0;
   fr = f_write(&f, s_buf, s_len, &bw);
   FRESULT fc = f_close(&f);
   if (fr != FR_OK) return (int)fr;
   if (fc != FR_OK) return (int)fc;
-  return (bw == s_len) ? 0 : -1;
+  if (bw != s_len) return -1;
+  log_clear();          /* persisted -> drop flushed lines; next flush appends only new */
+  return 0;
 }
