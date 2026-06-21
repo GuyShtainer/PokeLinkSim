@@ -16,13 +16,16 @@ this repository or compiled into the ROM** — only this project's own
 re-implementation is. pokeruby covers BOTH Pokémon Ruby and Sapphire. The pret
 decompilations are unofficial reverse-engineering projects; consult them upstream.
 
-## No bundled artwork or game text
-This repository and the released ROM ship **no Pokémon sprite/icon art** and **no
-verbatim in-game text** (item/move/ability descriptions). Species/move/item *names*
-and factual data tables (base stats, types, catch rates) are retained. The optional
-icon build reads a sprite pack you supply locally; that generated data
-(`source/mon_icons_data.h`) is gitignored and must not be redistributed (see
-`tools/gen_icons.py`).
+## Artwork: bundled in releases, not in the source tree
+This **repository / source tree** ships **no Pokémon sprite/icon art** and **no
+verbatim in-game text** (item/move/ability descriptions) — both are gitignored, not
+committed. The downloadable **release `.gba` bundles ripped Pokémon box-icon sprites**
+(© Game Freak / The Pokémon Company) so the download "just works" — the same way
+community tools like PKHeX ship sprites. The source builds with short text fallbacks
+when the art is absent. Species/move/item *names* and factual data tables (base stats,
+types, catch rates) are retained. To build the icons yourself, drop a Gen-3 sprite pack
+locally and regenerate the gitignored blob (`source/mon_icons_data.h`) with
+`python3 tools/gen_icons.py`; that generated art must not be redistributed.
 
 ## Vendored: gba-flashcartio  (`lib/`: flashcartio.*, sys.h, fatfs/, ezflashomega/, everdrivegbax5/)
 Vendored from afska/gba-flashcartio. Copyright (c) afska. See
@@ -47,5 +50,6 @@ was modified.
 Pokémon, Game Boy Advance, EZ-Flash, and EverDrive are trademarks of their
 respective owners. This project is an **unofficial fan homebrew tool**, is **not
 affiliated with, sponsored by, or endorsed by** Nintendo, Game Freak, or The Pokémon
-Company. It **ships no game ROM, BIOS, sprite art, or decompilation source** — you
-supply your own save files.
+Company. It bundles **no game ROM, BIOS, or decompilation source**; the release `.gba`
+includes ripped Game Freak box-icon sprites (gitignored, not committed to this repo —
+see "Artwork" above). You supply your own save files.

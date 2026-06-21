@@ -11,10 +11,12 @@ Emit source/mon_icons_data.h (GITIGNORED — never commit/redistribute) with:
                              (0xFFFF if none)
 Run from the repo root:  python3 tools/gen_icons.py
 
-This output is for a PERSONAL local build only. It is derived from a third-party
-Gen-3 sprite pack (c) Game Freak / The Pokemon Company and MUST NOT be committed
-or redistributed. The public repo and ROM ship NO sprite art: the committed
-source/mon_icons.c shim returns NULL icons unless this header is present.
+This output is derived from a third-party Gen-3 sprite pack (c) Game Freak / The
+Pokemon Company and MUST NOT be committed to the source tree or redistributed as
+source. The public REPOSITORY ships NO sprite art (this header is gitignored); the
+committed source/mon_icons.c shim returns NULL icons unless this header is present,
+so a from-source build uses text fallbacks. The downloadable RELEASE .gba bundles
+the generated sprites (built locally with this script), the same way PKHeX ships art.
 """
 import os, re, sys, urllib.request
 from PIL import Image

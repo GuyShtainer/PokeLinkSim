@@ -30,7 +30,10 @@ pokelinksim_log.txt
 # Compiled host-test binary (tests/host_test.c is tracked; the binary is not)
 /tests/host_test
 
-# NOTE: PokeLinkSim.gba is intentionally NOT ignored — commit the built ROM.
+# Built ROM is NOT committed: it embeds locally-generated ripped sprites, so it ships
+# only as a GitHub Release asset — the same policy as the PokeDNA repo. Build it
+# locally (make rebuild / ./build.sh) and upload the .gba to a release.
+*.gba
 
 # Source art for icon generation (generated into source/mon_icons.c, which IS committed)
 Gen 3 Sprite Pack V1/

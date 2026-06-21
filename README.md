@@ -3,8 +3,10 @@
 > **Unofficial fan homebrew.** PokeLinkSim is **not affiliated with, sponsored by, or
 > endorsed by** Nintendo, Game Freak, or The Pokémon Company. *Pokémon*, *Game Boy
 > Advance*, *EZ-Flash*, and *EverDrive* are trademarks of their respective owners.
-> This project ships **no game ROM, BIOS, sprite art, or decompilation source** — you
-> bring your own save files. Licensing & credits: [ATTRIBUTION.md](ATTRIBUTION.md).
+> This **repository** ships **no game ROM, BIOS, or decompilation source** — you bring
+> your own save files. The downloadable release `.gba` bundles ripped Game Freak
+> box-icon sprites (gitignored, not in the source tree). Licensing & credits:
+> [ATTRIBUTION.md](ATTRIBUTION.md).
 
 A Game Boy Advance homebrew that runs **on the cartridge** (EZ-Flash Omega / Omega DE)
 and reproduces Pokémon Gen 3 **link features** between two `.sav` files — with no
@@ -115,6 +117,19 @@ have devkitARM and libtonc, with `$DEVKITPRO` / `$DEVKITARM` set, then:
 ```bash
 make rebuild
 # -> PokeLinkSim.gba
+```
+
+### Art: bundled in releases, not in the source tree
+The downloadable release `.gba` includes ripped Pokémon **box-icon sprites** (© Game
+Freak / The Pokémon Company) so the download "just works" — the same way community
+tools like PKHeX ship sprites. Those assets are **not committed to this repository**:
+they are gitignored, and only the release binary carries them. The source builds with
+short text fallbacks without them. To build the icons yourself, drop a Gen-3 sprite
+pack under `Gen 3 Sprite Pack V1/` and regenerate the gitignored blob:
+
+```bash
+python3 tools/gen_icons.py   # -> source/mon_icons_data.h (gitignored; needs Pillow)
+make rebuild
 ```
 
 ---
