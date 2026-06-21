@@ -1063,11 +1063,20 @@ static void quick_mix_flow(const char* pathA, Gen3Version verA, const BrEntry* a
   show_msg("Quick mixing...", "(NO backup!)");
   log_line("=== QUICK MIX (no backup): %s[%s] <-> %s[%s] ===",
            pathA, ver_name(verA), pathB, ver_name(verB));
+  log_line("QUICK omit masks (excluded party slots): SAVE1=0x%02x SAVE2=0x%02x",
+           (unsigned)omitA, (unsigned)omitB);
+  MixStats qa, qb;
   SfStatus cst = sf_mix_bidir(pathA, verA, omitA, pathB, verB, omitB,
                               true /*commit*/, false /*make_backup*/,
                               NULL, NULL /*no party override (quick uses prefs)*/,
-                              g_save, NULL, NULL);
+                              g_save, &qa, &qb);
   log_line("quick mix: %s", cst == SF_OK ? "OK" : sf_status_str(cst));
+  if (cst == SF_OK) {
+    log_line("QUICK 1<-2: imported %d, dup %d, host %d/20%s",
+             qa.imported, qa.duplicates, qa.host_used, qa.overflow ? " (OVERFLOW)" : "");
+    log_line("QUICK 2<-1: imported %d, dup %d, host %d/20%s",
+             qb.imported, qb.duplicates, qb.host_used, qb.overflow ? " (OVERFLOW)" : "");
+  }
   log_flush_to_sd(LOG_PATH);
   if (cst != SF_OK) {
     result_screen("QUICK MIX FAILED", UI_DANGER, sf_status_str(cst), "Saves may be unmodified.");
@@ -1085,6 +1094,15 @@ static void quick_mix_flow(const char* pathA, Gen3Version verA, const BrEntry* a
                 "Reboot-to-menu not supported here.");
 }
 
+/* Log a save's identity (path, game, trainer, IDs) so the SD log unambiguously
+ * tells the two save files apart. Shared by the mix and trade flows. */
+static void log_save_identity(const char* tag, const char* path, const char* game_str,
+                              const BrEntry* e) {
+  log_line("%s %s | game %s | trainer '%s' | TID %u (sec %u)",
+           tag, path, game_str, e->trainer[0] ? e->trainer : "?",
+           (unsigned)e->tid_public, (unsigned)e->tid_secret);
+}
+
 static void run_mix_flow(void) {
   if (active_flashcart != EZ_FLASH_OMEGA) {     /* mix writes -> Omega-only (rule #4) */
     show_msg("Record Mix is Omega-only", "EverDrive runs read-only.");
@@ -1095,6 +1113,15 @@ static void run_mix_flow(void) {
   Gen3Version verA = G3_VER_UNKNOWN, verB = G3_VER_UNKNOWN;
   static BrEntry entA, entB;
   if (!browse_two(pathA, &verA, &entA, pathB, &verB, &entB)) return;
+
+  log_line("=== RECORD MIX (%s mode) ===", config_get_quick_mode() ? "QUICK" : "regular");
+  log_save_identity("MIX SAVE1", pathA, game_tag(&entA), &entA);
+  log_save_identity("MIX SAVE2", pathB, game_tag(&entB), &entB);
+  if (entA.tid_public == entB.tid_public && strcmp(entA.trainer, entB.trainer) == 0)
+    log_line("MIX WARNING: SAVE1 & SAVE2 are the SAME trainer ('%s', TID %u) -- a secret "
+             "base cannot mix into its own owner, so nothing new will ever import.",
+             entA.trainer, (unsigned)entA.tid_public);
+  log_flush_to_sd(LOG_PATH);
 
   if (config_get_quick_mode()) {
     quick_mix_flow(pathA, verA, &entA, pathB, verB, &entB);
@@ -1118,6 +1145,15 @@ static void run_mix_flow(void) {
   SfStatus st = sf_mix_bidir(pathA, verA, omitA, pathB, verB, omitB, false, true,
                              ovrA, ovrB, g_save, &ab, &ba);
   log_line("mix2 dry-run: %s", st == SF_OK ? "PASS" : sf_status_str(st));
+  if (st == SF_OK) {
+    log_line("MIX 1<-2: imported %d, dup %d, host %d/20%s",
+             ab.imported, ab.duplicates, ab.host_used, ab.overflow ? " (OVERFLOW)" : "");
+    log_line("MIX 2<-1: imported %d, dup %d, host %d/20%s",
+             ba.imported, ba.duplicates, ba.host_used, ba.overflow ? " (OVERFLOW)" : "");
+    if (ab.imported == 0 && ba.imported == 0)
+      log_line("MIX note: 0 new bases either way -- these saves are already mixed (dup>0) "
+               "or are the same trainer; re-mixing imports nothing new (this is normal).");
+  }
   log_flush_to_sd(LOG_PATH);
   if (st != SF_OK) { result_screen("DRY-RUN FAILED", UI_WARN, sf_status_str(st), "Nothing written."); return; }
 
@@ -1396,6 +1432,19 @@ static void run_trade_flow(void) {
   if (strcmp(pathA, pathB) == 0) {
     show_msg("Pick two DIFFERENT saves", NULL); ui_text(6, 100, UI_DIM, "B = back"); wait_keys(KEY_B);
     return;
+  }
+
+  {
+    char la[16], lb[16];
+    if (locA.kind == TLOC_BOX) siprintf(la, "box%d slot%d", locA.box + 1, locA.bslot + 1);
+    else                       siprintf(la, "party#%d", locA.pslot + 1);
+    if (locB.kind == TLOC_BOX) siprintf(lb, "box%d slot%d", locB.box + 1, locB.bslot + 1);
+    else                       siprintf(lb, "party#%d", locB.pslot + 1);
+    log_line("=== TRADE ===");
+    log_save_identity("TRADE SAVE1", pathA, trade_tag(&eA), &eA);
+    log_save_identity("TRADE SAVE2", pathB, trade_tag(&eB), &eB);
+    log_line("TRADE: SAVE1 gives from %s; SAVE2 gives from %s", la, lb);
+    log_flush_to_sd(LOG_PATH);
   }
 
   show_msg("Checking trade...", "(nothing written)");
