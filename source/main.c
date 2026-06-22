@@ -812,12 +812,47 @@ static bool setup_save(int s, const BrEntry* e, const char* path, Gen3Version ve
   g_npty[s] = pk_read_party(g_sb1, false, g_pty[s]);   /* RSE party (not FRLG) */
   for (int i = 0; i < 6; i++) g_chosen[s][i].in_use = 0;
   g_nchosen[s] = 0;
-  /* Default to the WHOLE live party selected (the validated behaviour). The saved-
-   * preset pre-fill was reverted: it made the mix register only the previously
-   * "kept" subset, which surprised users into thinking the mix had failed. */
-  for (int i = 0; i < g_npty[s] && g_nchosen[s] < 6; i++)
-    chosen_toggle(s, TP_PARTY, 0, (uint8_t)i, &g_pty[s][i]);
+
+  /* Remember the last mix: pre-fill the selection from this player's saved team
+   * preset (matched by species + nickname, exactly as QUICK MODE's omit_from_prefs
+   * does), so the Pokemon you registered last time start selected and the rest grey
+   * out. With no saved preset tp_apply keeps chk[]=true -> the whole party is
+   * selected (first-time behaviour). You can still toggle freely before mixing. */
+  {
+    Gen3DisplayParty dp;
+    memset(&dp, 0, sizeof(dp));
+    int n = g_npty[s] < 6 ? g_npty[s] : 6;
+    dp.count = n;
+    for (int i = 0; i < n; i++) {
+      dp.mon[i].species = g_pty[s][i].species;
+      copy_trunc(dp.mon[i].nickname, g_pty[s][i].nickname, (int)sizeof(dp.mon[i].nickname));
+      dp.mon[i].original_slot = (uint8_t)i;
+    }
+    bool chk[6];
+    for (int i = 0; i < 6; i++) chk[i] = true;
+    tp_apply(tp_find(e->game, e->trainer, e->tid_public), &dp, chk);
+    for (int i = 0; i < n && g_nchosen[s] < 6; i++)
+      if (chk[i]) chosen_toggle(s, TP_PARTY, 0, (uint8_t)i, &g_pty[s][i]);
+  }
   return true;
+}
+
+/* Remember each save's PARTY keep/omit selection (matched by species+nick) so it
+ * pre-fills next time and QUICK MODE reflects real choices. PC-box picks are not
+ * part of the party-preset model, so only the live party's slots are recorded. */
+static void remember_party_choice(int s, const BrEntry* e) {
+  Gen3DisplayParty dp;
+  memset(&dp, 0, sizeof(dp));
+  int n = g_npty[s] < 6 ? g_npty[s] : 6;
+  dp.count = n;
+  bool chk[6];
+  for (int i = 0; i < n; i++) {
+    dp.mon[i].species = g_pty[s][i].species;
+    copy_trunc(dp.mon[i].nickname, g_pty[s][i].nickname, (int)sizeof(dp.mon[i].nickname));
+    dp.mon[i].original_slot = (uint8_t)i;
+    chk[i] = chosen_find(s, TP_PARTY, 0, (uint8_t)i) >= 0;
+  }
+  tp_update(e->game, e->trainer, e->tid_public, e->tid_secret, &dp, chk);
 }
 
 /* Ensure save `s`'s file is the one resident in g_save (needed for PC box reads). */
@@ -1146,6 +1181,12 @@ static void run_mix_flow(void) {
   log_flush_to_sd(LOG_PATH);
 
   if (cst == SF_OK) {
+    /* Remember each side's party selection so it pre-fills (greyscale) next time
+     * and QUICK MODE uses the real choices. Best-effort: a failed write just isn't
+     * remembered and never blocks the completed mix. */
+    remember_party_choice(0, &entA);
+    remember_party_choice(1, &entB);
+    tp_save(PREFS_PATH);
     play_jingle(SFX_SUCCESS, 45);
     result_screen("MIX COMPLETE", UI_OK, "Both saves updated & backed up.",
                   "Load in-game; bases battleable.");
