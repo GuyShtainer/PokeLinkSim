@@ -324,14 +324,11 @@ bool recordmix_run(SecretBase* host,
     if (sb_registryStatus(&host[i]) == SB_REG_NEW)
       sb_set_registryStatus(&host[i], SB_REG_UNREGISTERED);
 
-  /* Make EVERY received base battleable again right after a mix. The friend-side
-   * clear (ClearDuplicateOwnedSecretBases) only resets battledOwnerToday on bases
-   * the friend's copy contributes; when you've already mixed these saves the
-   * partner's base is a duplicate whose HOST copy wins the dedup and survives with
-   * its battledOwnerToday still set -- so a re-mix never let you re-battle it. Clear
-   * the flag on all of the host's friend bases (slot 0 = own base -> skip). */
-  for (int i = 1; i < SB_COUNT; i++)
-    if (host[i].secretBaseId) sb_set_battledToday(&host[i], 0);
+  /* NOTE on battledOwnerToday: the real ReceiveSecretBasesData NEVER clears it on
+   * the host's own array during a mix -- only on the FRIEND's incoming bases (done
+   * above in ClearDuplicateOwnedSecretBases). The game re-enables battling once per
+   * RTC day (FLAG_DAILY_SECRET_BASE / GetSecretBaseOwnerAndState), not per mix. So a
+   * re-mixed base you already own keeps its flag until the next day -- intended. */
 
   /* Bump the host's own received counter (saturating at 0xFFFF). */
   if (host[0].secretBaseId != 0 && host[0].numSecretBasesReceived != 0xFFFF)

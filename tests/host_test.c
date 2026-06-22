@@ -168,9 +168,11 @@ static void test_merge(void) {
     assert(h[xi].secretBaseId == 30);           /* friend's older copy discarded */
   }
   {
-    /* re-mix an ALREADY-OWNED base you battled today (host copy wins the dedup):
-     * it must become battleable again, else you can never re-battle after mixing
-     * the same saves twice (the reported can't-re-battle bug). */
+    /* FIDELITY: re-mix an already-owned base you battled today, host copy wins the
+     * dedup (higher numSecretBasesReceived). The real ReceiveSecretBasesData leaves
+     * the surviving HOST copy's battledOwnerToday UNCHANGED -- it is only re-enabled
+     * on a new RTC day, never by a mix. So the kept copy must STILL read battled=1
+     * (guards against re-adding the non-faithful host-wide clear). */
     SecretBase h[20], f[20];
     memset(h, 0, sizeof(h));
     memset(f, 0, sizeof(f));
@@ -182,8 +184,8 @@ static void test_merge(void) {
     recordmix_run(h, &host, G3_VER_EMERALD, f, G3_VER_EMERALD, NULL);
     int xi = find_by_trainer(h, 3333, "XTRN");
     assert(xi >= 0);
-    assert(h[xi].numSecretBasesReceived == 9);  /* kept the host's newer copy */
-    assert(sb_battledToday(&h[xi]) == 0);       /* re-battleable after the mix */
+    assert(h[xi].numSecretBasesReceived == 9);  /* kept the host's newer copy   */
+    assert(sb_battledToday(&h[xi]) == 1);       /* flag untouched (real-game faithful) */
   }
   {
     /* reverse: friend's copy is newer -> it replaces the host's */

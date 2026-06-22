@@ -452,6 +452,17 @@ SfStatus sf_mix_bidir(const char* pathA, Gen3Version verA, uint8_t omitA,
   st = load_save_bases(pathB, verB, omitB, ovrB, work, &infoB, &idB, s_basesB);
   if (st != SF_OK) { log_line("mix: load B failed (%s)", sf_status_str(st)); return st; }
   log_line("mix: A slot=%d, B slot=%d snapshotted", infoA.slot, infoB.slot);
+  /* Log the team each save will SHARE into the other's base (regenerated from its
+   * live party). If a base's team looks stale in-game, compare it to this -- a
+   * mismatch means that save's .sav wasn't saved in-game after the party changed. */
+  log_line("mix: SAVE1 base team species [%u %u %u %u %u %u]",
+           (unsigned)s_basesA[0].species[0], (unsigned)s_basesA[0].species[1],
+           (unsigned)s_basesA[0].species[2], (unsigned)s_basesA[0].species[3],
+           (unsigned)s_basesA[0].species[4], (unsigned)s_basesA[0].species[5]);
+  log_line("mix: SAVE2 base team species [%u %u %u %u %u %u]",
+           (unsigned)s_basesB[0].species[0], (unsigned)s_basesB[0].species[1],
+           (unsigned)s_basesB[0].species[2], (unsigned)s_basesB[0].species[3],
+           (unsigned)s_basesB[0].species[4], (unsigned)s_basesB[0].species[5]);
 
   /* --- Phase 2: merge BOTH directions in RAM from the originals. --- */
   MixStats sab, sba;
@@ -463,6 +474,29 @@ SfStatus sf_mix_bidir(const char* pathA, Gen3Version verA, uint8_t omitA,
   if (!recordmix_run(s_mergedB, &idB, verB, s_friend, verA, &sba)) return SF_ERR_LAYOUT;
   log_dir("A<-B", &sab);
   log_dir("B<-A", &sba);
+  /* Confirm each save actually IMPORTED the partner's refreshed team (match the
+   * partner's base by its location id). SAVE1's "now has partner base team" should
+   * equal SAVE2's shared team above (and vice versa); if it instead shows an old
+   * team, the host's stale copy won the dedup. */
+  {
+    int ai = -1, bi = -1;
+    for (int i = 0; i < G3_SECRET_BASES_COUNT; i++) {
+      if (s_mergedA[i].secretBaseId && s_mergedA[i].secretBaseId == s_basesB[0].secretBaseId) ai = i;
+      if (s_mergedB[i].secretBaseId && s_mergedB[i].secretBaseId == s_basesA[0].secretBaseId) bi = i;
+    }
+    if (ai >= 0)
+      log_line("mix: SAVE1 now has partner base team [%u %u %u %u %u %u]",
+               (unsigned)s_mergedA[ai].species[0], (unsigned)s_mergedA[ai].species[1],
+               (unsigned)s_mergedA[ai].species[2], (unsigned)s_mergedA[ai].species[3],
+               (unsigned)s_mergedA[ai].species[4], (unsigned)s_mergedA[ai].species[5]);
+    else log_line("mix: SAVE1 has no base at partner location %u", (unsigned)s_basesB[0].secretBaseId);
+    if (bi >= 0)
+      log_line("mix: SAVE2 now has partner base team [%u %u %u %u %u %u]",
+               (unsigned)s_mergedB[bi].species[0], (unsigned)s_mergedB[bi].species[1],
+               (unsigned)s_mergedB[bi].species[2], (unsigned)s_mergedB[bi].species[3],
+               (unsigned)s_mergedB[bi].species[4], (unsigned)s_mergedB[bi].species[5]);
+    else log_line("mix: SAVE2 has no base at partner location %u", (unsigned)s_basesA[0].secretBaseId);
+  }
   if (statsAtoB) *statsAtoB = sab;
   if (statsBtoA) *statsBtoA = sba;
 
