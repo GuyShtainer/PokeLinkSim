@@ -407,50 +407,8 @@ static bool quick_enable_confirm(void) {
   return (wait_keys(KEY_A | KEY_B) & KEY_A) != 0;
 }
 
-static void render_browser(int sel, int top, int stage, const BrEntry* lockA) {
-  ui_clear();
-
-  char line[48], nbuf[40], hdr[40];
-  bool quick = config_get_quick_mode();
-  siprintf(line, "MIXER  %s", g_cwd);
-  ui_truncate(hdr, line, quick ? 22 : 29);
-  ui_text(2, HDR_Y, UI_TITLE, hdr);
-  if (quick) ui_text(192, HDR_Y, UI_DANGER, "QUICK");
-
-  ui_panel(0, LIST_BOX_Y, 240, LIST_BOX_H, UI_PANEL, UI_BORDER);
-  int rows = br_rows();
-  for (int r = 0; r < LIST_ROWS; r++) {
-    int row = top + r;
-    if (row >= rows) break;
-    int y = LROW0_Y + r * LROW_H;
-    BrEntry* e = br_entry(row);
-    u16 ink;
-    if (!e) { siprintf(line, "[..] up"); ink = UI_WARN; }
-    else if (e->is_dir) {
-      ui_truncate(nbuf, e->name, 22);
-      siprintf(line, "%-22s    DIR", nbuf); ink = UI_DIRCLR;
-    } else {
-      int mo, dy; dos_date(e->dosdt, &mo, &dy);
-      ui_truncate(nbuf, e->name, 17);
-      siprintf(line, "%-17s %02d-%02d %s", nbuf, mo, dy, game_tag(e)); ink = UI_SAVECLR;
-    }
-    ui_text_sel(3, y, 234, row == sel, ink, line);
-  }
-  if (g_nentries == 0)            /* folder may hold FRLG/other saves we hide */
-    ui_text(40, LROW0_Y + 2 * LROW_H, UI_DIM, "No R/S/E saves here");
-
-  BrEntry* cur = br_entry(sel);
-  if (stage == 0) {
-    render_save_panel(LP_X, BP_Y, BP_H, cur, true, "(folder)");
-    render_save_panel(RP_X, BP_Y, BP_H, NULL, false, "SAVE 2 next");
-  } else {
-    render_save_panel(LP_X, BP_Y, BP_H, lockA, false, "");
-    render_save_panel(RP_X, BP_Y, BP_H, cur, true, "(folder)");
-  }
-
-  ui_text(2, FOOT_Y, UI_DIM, stage == 1 ? "A pick SEL test START undo1"
-                                        : "A pick SEL test START quick");
-}
+/* (render_browser + browse_two removed -- superseded by browse_multi, which picks
+ *  2-4 saves with its own inline render reusing render_save_panel.) */
 
 static void run_self_test(const BrEntry* e) {
   char path[PATH_MAX];
@@ -469,68 +427,6 @@ static void run_self_test(const BrEntry* e) {
 }
 
 /* Browse + pick two saves; also outputs each chosen entry (for the summaries). */
-static bool browse_two(char* pathA, Gen3Version* verA, BrEntry* outA,
-                       char* pathB, Gen3Version* verB, BrEntry* outB) {
-  if (browse_scan() < 0) halt_msg("Cannot read SD root");
-  int sel = 0, top = 0, stage = 0;
-  BrEntry lockA;
-  memset(&lockA, 0, sizeof(lockA));
-  bool dirty = true;
-
-  while (1) {
-    int rows = br_rows();
-    if (rows == 0) sel = 0; else if (sel >= rows) sel = rows - 1;
-    if (sel < 0) sel = 0;
-    if (sel < top) top = sel;
-    if (sel >= top + LIST_ROWS) top = sel - LIST_ROWS + 1;
-    if (top < 0) top = 0;
-
-    if (dirty) { render_browser(sel, top, stage, &lockA); dirty = false; }
-
-    vsync();
-    u16 mv  = key_repeat(KEY_UP | KEY_DOWN);
-    u16 hit = key_hit(KEY_LEFT | KEY_RIGHT | KEY_L | KEY_R | KEY_A | KEY_B | KEY_SELECT | KEY_START);
-    if (!mv && !hit) continue;
-    dirty = true;
-
-    if (mv & KEY_DOWN)       { if (rows) sel = (sel + 1) % rows; }
-    else if (mv & KEY_UP)    { if (rows) sel = (sel == 0) ? rows - 1 : sel - 1; }
-    else if (hit & KEY_RIGHT){ sel += 7; if (sel >= rows) sel = rows - 1; }  /* page down */
-    else if (hit & KEY_LEFT) { sel -= 7; if (sel < 0) sel = 0; }             /* page up   */
-    else if (hit & KEY_L)    { sel = 0; }                                    /* top       */
-    else if (hit & KEY_R)    { sel = rows ? rows - 1 : 0; }                  /* bottom    */
-    else if (hit & KEY_SELECT) { run_self_test(br_entry(sel)); }
-    else if (hit & KEY_START)  {
-      if (stage == 1) stage = 0;                         /* undo SAVE 1 */
-      else if (config_get_quick_mode()) {                /* turn OFF freely */
-        config_set_quick_mode(false); config_save(CONFIG_PATH);
-      } else if (quick_enable_confirm()) {               /* turn ON only after confirm */
-        config_set_quick_mode(true); config_save(CONFIG_PATH);
-      }
-    }
-    else if (hit & KEY_B)    { if (!at_root()) { path_up(); browse_scan(); sel = 0; top = 0; persist_cwd(); } else return false; }  /* B at root -> back to main menu */
-    else if (hit & KEY_A) {
-      BrEntry* e = br_entry(sel);
-      if (!e) { if (!at_root()) { path_up(); browse_scan(); sel = 0; top = 0; persist_cwd(); } }
-      else if (e->is_dir) {
-        char np[PATH_MAX];
-        if (path_join(g_cwd, e->name, np)) { strcpy(g_cwd, np); browse_scan(); sel = 0; top = 0; persist_cwd(); }
-      } else {
-        if (stage == 0) {
-          if (!path_join(g_cwd, e->name, pathA)) continue;
-          *verA = e->ver; lockA = *e; *outA = *e; stage = 1;
-        } else {
-          char tmp[PATH_MAX];
-          if (!path_join(g_cwd, e->name, tmp)) continue;
-          if (strcmp(tmp, pathA) == 0) continue;
-          strcpy(pathB, tmp); *verB = e->ver; *outB = *e;
-          return true;
-        }
-      }
-    }
-  }
-}
-
 /* Index of `path` in the picked list, or -1. */
 static int multi_find(char paths[][PATH_MAX], int n, const char* path) {
   for (int i = 0; i < n; i++) if (strcmp(paths[i], path) == 0) return i;
@@ -833,16 +729,6 @@ static void render_team_side(int s, int bx, const char* owner, int fcell) {
   if (g_npty[s] == 0) ui_text(bx + 4, 36, UI_DIM, "(no party)");
 }
 
-static void render_parties(int s, int cell, const char* ownerA, const char* ownerB,
-                           const char* warn) {
-  ui_clear();
-  ui_text(2, 0, UI_TITLE, "REGISTER TEAMS");
-  ui_text(140, 0, UI_DIM, "up to 6 each");
-  render_team_side(0, LP_X, ownerA, s == 0 ? cell : -1);
-  render_team_side(1, RP_X, ownerB, s == 1 ? cell : -1);
-  ui_text(2, FOOT_Y, warn ? UI_WARN : UI_DIM,
-          warn ? warn : "A pick L/R PC SEL stat START");
-}
 
 /* Box mode: the active save's party as a context row + its PC box grid below. */
 static void render_box_view(int s, const char* owner, int bcur, const char* warn) {
@@ -963,91 +849,8 @@ static void ensure_loaded(int s) {
 }
 
 /* Pick BOTH saves' teams on one screen. False = user cancelled the whole mix. */
-static bool pick_two_teams(const BrEntry* eA, const char* pathA, Gen3Version verA, SbPartyChoice* outA,
-                           const BrEntry* eB, const char* pathB, Gen3Version verB, SbPartyChoice* outB) {
-  g_loaded = -1;
-  if (!setup_save(0, eA, pathA, verA)) return false;
-  if (!setup_save(1, eB, pathB, verB)) return false;
-
-  char ownerA[20], ownerB[20];
-  siprintf(ownerA, "%s %s", eA->trainer, game_tag(eA));
-  siprintf(ownerB, "%s %s", eB->trainer, game_tag(eB));
-
-  int view = TP_PARTY;     /* TP_PARTY = both parties; TP_PC = active save's box */
-  int gcol = 0, grow = 0;  /* party cursor spans both 3x2 grids (cols 0..5)       */
-  int bcur = 0;            /* box cursor 0..29                                    */
-  const char* warn = NULL;
-  bool dirty = true;
-  while (1) {
-    int s    = gcol < 3 ? 0 : 1;
-    int cell = grow * 3 + (gcol % 3);
-    const char* owner = (s == 0) ? ownerA : ownerB;
-    if (dirty) {
-      if (view == TP_PARTY) render_parties(s, cell, ownerA, ownerB, warn);
-      else                  render_box_view(s, owner, bcur, warn);
-      dirty = false;
-    }
-    vsync();
-    u16 mv  = key_repeat(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT);
-    u16 hit = key_hit(KEY_A | KEY_B | KEY_START | KEY_SELECT | KEY_L | KEY_R);
-    if (!mv && !hit) continue;
-    dirty = true; warn = NULL;
-
-    if (hit & KEY_START) {
-      if (g_nchosen[0] == 0 || g_nchosen[1] == 0) { warn = "Pick >=1 per save!"; continue; }
-      build_choice(0, outA); build_choice(1, outB);
-      return true;
-    }
-
-    if (view == TP_PARTY) {
-      if (hit & KEY_B) return false;               /* cancel the whole mix */
-      else if (hit & (KEY_L | KEY_R)) {            /* open this save's PC box */
-        ensure_loaded(s);
-        read_box_into(g_save, g_mslot[s], g_curbox[s]);
-        bcur = 0; view = TP_PC;
-      }
-      else if (hit & KEY_SELECT) {
-        if (g_npty[s]) {
-          int cur = cell;
-          team_stats_screen(s, g_pty[s], 6, TP_PARTY, 0, owner, &cur);
-          gcol = s * 3 + (cur % 3); grow = cur / 3;
-        }
-      }
-      else if (hit & KEY_A) {
-        if (cell < g_npty[s] && !chosen_toggle(s, TP_PARTY, 0, (uint8_t)cell, &g_pty[s][cell]))
-          warn = "Team is full (6)!";
-      }
-      else if (mv & KEY_LEFT)  { if (gcol > 0) gcol--; }
-      else if (mv & KEY_RIGHT) { if (gcol < 5) gcol++; }
-      else if (mv & (KEY_UP | KEY_DOWN)) grow ^= 1;
-    } else {                                       /* box mode for save s */
-      if (hit & (KEY_B | KEY_L | KEY_R)) { view = TP_PARTY; }
-      else if (hit & KEY_SELECT) {
-        int cur = bcur;
-        team_stats_screen(s, g_boxmons, G3_IN_BOX, TP_PC, (uint8_t)g_curbox[s], owner, &cur);
-        bcur = cur;
-      }
-      else if (hit & KEY_A) {
-        if (g_boxmons[bcur].species &&
-            !chosen_toggle(s, TP_PC, (uint8_t)g_curbox[s], (uint8_t)bcur, &g_boxmons[bcur]))
-          warn = "Team is full (6)!";
-      }
-      else {
-        int col = bcur % 6, row = bcur / 6;
-        if (mv & KEY_LEFT) {
-          if (col > 0) bcur--;
-          else { g_curbox[s] = (g_curbox[s] + G3_TOTAL_BOXES - 1) % G3_TOTAL_BOXES;
-                 read_box_into(g_save, g_mslot[s], g_curbox[s]); bcur = row * 6 + 5; }
-        } else if (mv & KEY_RIGHT) {
-          if (col < 5) bcur++;
-          else { g_curbox[s] = (g_curbox[s] + 1) % G3_TOTAL_BOXES;
-                 read_box_into(g_save, g_mslot[s], g_curbox[s]); bcur = row * 6; }
-        } else if (mv & KEY_UP)   { bcur = (row > 0) ? bcur - 6 : bcur + 24; }
-        else if (mv & KEY_DOWN)   { bcur = (row < 4) ? bcur + 6 : bcur - 24; }
-      }
-    }
-  }
-}
+/* (pick_two_teams removed -- superseded by the sequential pick_one_team/pick_n_teams
+ *  below, which also covers the 2-save case.) */
 
 /* Single-save register screen for the N-way mixer (one save at a time). Reuses the
  * per-save grid + PC-box views; pre-filled from this save's saved preset (team
