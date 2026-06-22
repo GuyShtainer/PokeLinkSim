@@ -58,6 +58,7 @@
 #define BR_MAX    128
 #define BR_NAME   64
 #define PATH_MAX  256
+#define MIX_MAX_SAVES 4   /* mix 2..4 saves at once (must match savefile.c SF_MAX_MIX) */
 
 /* ---- layout (pixels) ---------------------------------------------------- */
 #define HDR_Y       0
@@ -530,6 +531,105 @@ static bool browse_two(char* pathA, Gen3Version* verA, BrEntry* outA,
   }
 }
 
+/* Index of `path` in the picked list, or -1. */
+static int multi_find(char paths[][PATH_MAX], int n, const char* path) {
+  for (int i = 0; i < n; i++) if (strcmp(paths[i], path) == 0) return i;
+  return -1;
+}
+
+/* Browse + pick 2..maxn DISTINCT saves to mix (real games mix up to 4 players).
+ * A on a save toggles it in/out of the picked set (never the same save twice);
+ * A on a folder enters it; START begins once >=2 are picked; SELECT self-tests;
+ * B goes up a folder, or at the root returns to the main menu. Outputs
+ * paths[]/vers[]/ents[]; returns the count picked (0 = cancelled). */
+static int browse_multi(char paths[][PATH_MAX], Gen3Version vers[], BrEntry ents[], int maxn) {
+  if (browse_scan() < 0) halt_msg("Cannot read SD root");
+  int sel = 0, top = 0, n = 0;
+  bool dirty = true;
+  while (1) {
+    int rows = br_rows();
+    if (rows == 0) sel = 0; else if (sel >= rows) sel = rows - 1;
+    if (sel < 0) sel = 0;
+    if (sel < top) top = sel;
+    if (sel >= top + LIST_ROWS) top = sel - LIST_ROWS + 1;
+    if (top < 0) top = 0;
+
+    if (dirty) {
+      ui_clear();
+      char line[48], nbuf[40], hdr[40];
+      siprintf(hdr, "MIX: pick saves  %d/%d", n, maxn);
+      ui_truncate(line, hdr, 26); ui_text(2, HDR_Y, UI_TITLE, line);
+      if (config_get_quick_mode()) ui_text(196, HDR_Y, UI_DANGER, "QUICK");
+      ui_panel(0, LIST_BOX_Y, 240, LIST_BOX_H, UI_PANEL, UI_BORDER);
+      for (int r = 0; r < LIST_ROWS; r++) {
+        int row = top + r;
+        if (row >= rows) break;
+        int y = LROW0_Y + r * LROW_H;
+        BrEntry* e = br_entry(row);
+        u16 ink;
+        if (!e) { siprintf(line, " [..] up"); ink = UI_WARN; }
+        else if (e->is_dir) { ui_truncate(nbuf, e->name, 21); siprintf(line, " %-21s   DIR", nbuf); ink = UI_DIRCLR; }
+        else {
+          char full[PATH_MAX]; int picked = 0;
+          if (path_join(g_cwd, e->name, full)) picked = multi_find(paths, n, full) >= 0;
+          int mo, dy; dos_date(e->dosdt, &mo, &dy);
+          ui_truncate(nbuf, e->name, 15);
+          siprintf(line, "%c%-15s %02d-%02d %s", picked ? '*' : ' ', nbuf, mo, dy, game_tag(e));
+          ink = picked ? UI_OK : UI_SAVECLR;
+        }
+        ui_text_sel(3, y, 234, row == sel, ink, line);
+      }
+      if (g_nentries == 0) ui_text(40, LROW0_Y + 2 * LROW_H, UI_DIM, "No R/S/E saves here");
+
+      render_save_panel(LP_X, BP_Y, BP_H, br_entry(sel), true, "(folder)");
+      ui_panel(RP_X, BP_Y, BP_W, BP_H, UI_PANEL, n >= 2 ? UI_TITLE : UI_BORDER);
+      ui_text(RP_X + 3, BP_Y + 3, UI_TITLE, "Picked");
+      for (int i = 0; i < n; i++) {
+        char nm[14]; ui_truncate(nm, ents[i].trainer[0] ? ents[i].trainer : "?", 12);
+        siprintf(line, "%d %s %s", i + 1, nm, game_tag(&ents[i]));
+        ui_text(RP_X + 3, BP_Y + 15 + i * 11, UI_OK, line);
+      }
+      if (n == 0) ui_text(RP_X + 3, BP_Y + 15, UI_DIM, "A = add a save");
+      ui_text(2, FOOT_Y, UI_DIM, n >= 2 ? "A +/-  START mix  SEL test  B" : "A add  SEL test  B back");
+      dirty = false;
+    }
+
+    vsync();
+    u16 mv  = key_repeat(KEY_UP | KEY_DOWN);
+    u16 hit = key_hit(KEY_LEFT | KEY_RIGHT | KEY_L | KEY_R | KEY_A | KEY_B | KEY_SELECT | KEY_START);
+    if (!mv && !hit) continue;
+    dirty = true;
+
+    if (mv & KEY_DOWN)        { if (rows) sel = (sel + 1) % rows; }
+    else if (mv & KEY_UP)     { if (rows) sel = (sel == 0) ? rows - 1 : sel - 1; }
+    else if (hit & KEY_RIGHT) { sel += 7; if (sel >= rows) sel = rows - 1; }
+    else if (hit & KEY_LEFT)  { sel -= 7; if (sel < 0) sel = 0; }
+    else if (hit & KEY_L)     { sel = 0; }
+    else if (hit & KEY_R)     { sel = rows ? rows - 1 : 0; }
+    else if (hit & KEY_SELECT){ run_self_test(br_entry(sel)); }
+    else if (hit & KEY_START) { if (n >= 2) return n; }
+    else if (hit & KEY_B)     { if (!at_root()) { path_up(); browse_scan(); sel = 0; top = 0; persist_cwd(); } else return 0; }
+    else if (hit & KEY_A) {
+      BrEntry* e = br_entry(sel);
+      if (!e) { if (!at_root()) { path_up(); browse_scan(); sel = 0; top = 0; persist_cwd(); } }
+      else if (e->is_dir) {
+        char np[PATH_MAX];
+        if (path_join(g_cwd, e->name, np)) { strcpy(g_cwd, np); browse_scan(); sel = 0; top = 0; persist_cwd(); }
+      } else {
+        char full[PATH_MAX];
+        if (!path_join(g_cwd, e->name, full)) continue;
+        int at = multi_find(paths, n, full);
+        if (at >= 0) {                                  /* already picked -> remove + compact */
+          for (int i = at; i < n - 1; i++) { strcpy(paths[i], paths[i + 1]); vers[i] = vers[i + 1]; ents[i] = ents[i + 1]; }
+          n--;
+        } else if (n < maxn) {                          /* add (distinct) */
+          strcpy(paths[n], full); vers[n] = e->ver; ents[n] = *e; n++;
+        }
+      }
+    }
+  }
+}
+
 /* ===================== party select + stats ============================= */
 
 static bool read_display_party(const char* path, Gen3DisplayParty* dp) {
@@ -949,6 +1049,86 @@ static bool pick_two_teams(const BrEntry* eA, const char* pathA, Gen3Version ver
   }
 }
 
+/* Single-save register screen for the N-way mixer (one save at a time). Reuses the
+ * per-save grid + PC-box views; pre-filled from this save's saved preset (team
+ * memory). START confirms (>=1 mon) and remembers the choice; B cancels the whole
+ * mix. Returns false on cancel / load failure. */
+static bool pick_one_team(const BrEntry* e, const char* path, Gen3Version ver,
+                          int which, int total, SbPartyChoice* out) {
+  g_loaded = -1;
+  if (!setup_save(0, e, path, ver)) return false;
+  char owner[20]; siprintf(owner, "%s %s", e->trainer, game_tag(e));
+  int view = TP_PARTY, gcol = 0, grow = 0, bcur = 0;
+  const char* warn = NULL;
+  bool dirty = true;
+  while (1) {
+    int cell = grow * 3 + (gcol % 3);
+    if (dirty) {
+      if (view == TP_PARTY) {
+        ui_clear();
+        char hdr[36]; siprintf(hdr, "REGISTER  save %d/%d", which, total);
+        ui_text(2, 0, UI_TITLE, hdr);
+        ui_text(150, 0, UI_DIM, "up to 6");
+        render_team_side(0, 60, owner, cell);
+        ui_text(2, FOOT_Y, warn ? UI_WARN : UI_DIM, warn ? warn : "A pick L/R PC SEL stat START");
+      } else {
+        render_box_view(0, owner, bcur, warn);
+      }
+      dirty = false;
+    }
+    vsync();
+    u16 mv  = key_repeat(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT);
+    u16 hit = key_hit(KEY_A | KEY_B | KEY_START | KEY_SELECT | KEY_L | KEY_R);
+    if (!mv && !hit) continue;
+    dirty = true; warn = NULL;
+
+    if (hit & KEY_START) {
+      if (g_nchosen[0] == 0) { warn = "Pick >=1 mon!"; continue; }
+      build_choice(0, out);
+      remember_party_choice(0, e);   /* tp_update; caller tp_saves after commit */
+      return true;
+    }
+    if (view == TP_PARTY) {
+      if (hit & KEY_B) return false;                 /* cancel the whole mix */
+      else if (hit & (KEY_L | KEY_R)) { ensure_loaded(0); read_box_into(g_save, g_mslot[0], g_curbox[0]); bcur = 0; view = TP_PC; }
+      else if (hit & KEY_SELECT) {
+        if (g_npty[0]) { int cur = cell; team_stats_screen(0, g_pty[0], 6, TP_PARTY, 0, owner, &cur); gcol = cur % 3; grow = cur / 3; }
+      }
+      else if (hit & KEY_A) {
+        if (cell < g_npty[0] && !chosen_toggle(0, TP_PARTY, 0, (uint8_t)cell, &g_pty[0][cell])) warn = "Team is full (6)!";
+      }
+      else if (mv & KEY_LEFT)  { if (gcol > 0) gcol--; }
+      else if (mv & KEY_RIGHT) { if (gcol < 2) gcol++; }
+      else if (mv & (KEY_UP | KEY_DOWN)) grow ^= 1;
+    } else {                                          /* box mode for save 0 */
+      if (hit & (KEY_B | KEY_L | KEY_R)) { view = TP_PARTY; }
+      else if (hit & KEY_SELECT) { int cur = bcur; team_stats_screen(0, g_boxmons, G3_IN_BOX, TP_PC, (uint8_t)g_curbox[0], owner, &cur); bcur = cur; }
+      else if (hit & KEY_A) {
+        if (g_boxmons[bcur].species && !chosen_toggle(0, TP_PC, (uint8_t)g_curbox[0], (uint8_t)bcur, &g_boxmons[bcur])) warn = "Team is full (6)!";
+      }
+      else {
+        int col = bcur % 6, row = bcur / 6;
+        if (mv & KEY_LEFT) {
+          if (col > 0) bcur--;
+          else { g_curbox[0] = (g_curbox[0] + G3_TOTAL_BOXES - 1) % G3_TOTAL_BOXES; read_box_into(g_save, g_mslot[0], g_curbox[0]); bcur = row * 6 + 5; }
+        } else if (mv & KEY_RIGHT) {
+          if (col < 5) bcur++;
+          else { g_curbox[0] = (g_curbox[0] + 1) % G3_TOTAL_BOXES; read_box_into(g_save, g_mslot[0], g_curbox[0]); bcur = row * 6; }
+        } else if (mv & KEY_UP)   { bcur = (row > 0) ? bcur - 6 : bcur + 24; }
+        else if (mv & KEY_DOWN)   { bcur = (row < 4) ? bcur + 6 : bcur - 24; }
+      }
+    }
+  }
+}
+
+/* Pick each of the n saves' teams in turn (pre-filled from each save's preset). */
+static bool pick_n_teams(BrEntry ents[], char paths[][PATH_MAX], Gen3Version vers[], int n,
+                         SbPartyChoice choices[]) {
+  for (int i = 0; i < n; i++)
+    if (!pick_one_team(&ents[i], paths[i], vers[i], i + 1, n, &choices[i])) return false;
+  return true;
+}
+
 /* ===================== mix flow ========================================= */
 
 static void result_screen(const char* title, u16 ink, const char* l1, const char* l2) {
@@ -1042,44 +1222,37 @@ static u8 omit_from_prefs(const BrEntry* e, const char* path) {
   return omit;
 }
 
-static bool quick_confirm(const BrEntry* a, const BrEntry* b) {
+static bool quick_confirm_multi(const BrEntry ents[], int n) {
   ui_clear();
   ui_text(6, 4, UI_TITLE, "QUICK MIX");
   char line[48];
-  siprintf(line, "1: %s %s", a->trainer, game_tag(a)); ui_text(6, 24, UI_TEXT, line);
-  siprintf(line, "2: %s %s", b->trainer, game_tag(b)); ui_text(6, 36, UI_TEXT, line);
-  ui_text(6, 54, UI_DIM, "Uses saved team presets.");
-  ui_text(6, 78,  UI_DANGER, "DANGER: NO BACKUP is made.");
-  ui_text(6, 90,  UI_DANGER, "Both saves overwritten in");
-  ui_text(6, 102, UI_DANGER, "place - there is NO undo.");
-  ui_text(6, 128, UI_OK,   "A = mix now");
-  ui_text(6, 140, UI_WARN, "B = cancel");
+  for (int i = 0; i < n && i < MIX_MAX_SAVES; i++) {
+    siprintf(line, "%d: %s %s", i + 1, ents[i].trainer, game_tag(&ents[i]));
+    ui_text(6, 22 + i * 10, UI_TEXT, line);
+  }
+  ui_text(6, 72,  UI_DIM,    "Uses saved team presets.");
+  ui_text(6, 92,  UI_DANGER, "DANGER: NO BACKUP is made.");
+  ui_text(6, 104, UI_DANGER, "All saves overwritten -");
+  ui_text(6, 116, UI_DANGER, "there is NO undo.");
+  ui_text(6, 138, UI_OK,   "A = mix now    B = cancel");
   u16 c = wait_keys(KEY_A | KEY_B);
   return (c & KEY_A) != 0;
 }
 
-static void quick_mix_flow(const char* pathA, Gen3Version verA, const BrEntry* a,
-                           const char* pathB, Gen3Version verB, const BrEntry* b) {
-  if (!quick_confirm(a, b)) return;
-  u8 omitA = omit_from_prefs(a, pathA);
-  u8 omitB = omit_from_prefs(b, pathB);
+static void quick_mix_flow_multi(const char* paths[], Gen3Version vers[], const BrEntry ents[], int n) {
+  if (!quick_confirm_multi(ents, n)) return;
+  static uint8_t omits[MIX_MAX_SAVES];
+  for (int i = 0; i < n; i++) omits[i] = omit_from_prefs(&ents[i], paths[i]);
   show_msg("Quick mixing...", "(NO backup!)");
-  log_line("=== QUICK MIX (no backup): %s[%s] <-> %s[%s] ===",
-           pathA, ver_name(verA), pathB, ver_name(verB));
-  log_line("QUICK omit masks (excluded party slots): SAVE1=0x%02x SAVE2=0x%02x",
-           (unsigned)omitA, (unsigned)omitB);
-  MixStats qa, qb;
-  SfStatus cst = sf_mix_bidir(pathA, verA, omitA, pathB, verB, omitB,
-                              true /*commit*/, false /*make_backup*/,
-                              NULL, NULL /*no party override (quick uses prefs)*/,
-                              g_save, &qa, &qb);
+  log_line("=== QUICK MIX (no backup, %d saves) ===", n);
+  for (int i = 0; i < n; i++) log_line("QUICK SAVE%d omit mask 0x%02x", i + 1, (unsigned)omits[i]);
+  static MixStats qstats[MIX_MAX_SAVES];
+  SfStatus cst = sf_mix_multi(paths, vers, omits, NULL, n, true /*commit*/, false /*no backup*/, g_save, qstats);
   log_line("quick mix: %s", cst == SF_OK ? "OK" : sf_status_str(cst));
-  if (cst == SF_OK) {
-    log_line("QUICK 1<-2: imported %d, dup %d, host %d/20%s",
-             qa.imported, qa.duplicates, qa.host_used, qa.overflow ? " (OVERFLOW)" : "");
-    log_line("QUICK 2<-1: imported %d, dup %d, host %d/20%s",
-             qb.imported, qb.duplicates, qb.host_used, qb.overflow ? " (OVERFLOW)" : "");
-  }
+  if (cst == SF_OK)
+    for (int i = 0; i < n; i++)
+      log_line("QUICK SAVE%d: imported %d dup %d host %d/20%s", i + 1,
+               qstats[i].imported, qstats[i].duplicates, qstats[i].host_used, qstats[i].overflow ? " (OVERFLOW)" : "");
   log_flush_to_sd(LOG_PATH);
   if (cst != SF_OK) {
     result_screen("QUICK MIX FAILED", UI_DANGER, sf_status_str(cst), "Saves may be unmodified.");
@@ -1093,7 +1266,7 @@ static void quick_mix_flow(const char* pathA, Gen3Version verA, const BrEntry* a
   sfx_silence();
   flashcartio_reboot();                     /* no return on Omega/EverDrive */
   /* Only reached if reboot is unsupported (no/unknown cart). */
-  result_screen("MIX COMPLETE", UI_OK, "Both saves updated (no backup).",
+  result_screen("MIX COMPLETE", UI_OK, "All saves updated (no backup).",
                 "Reboot-to-menu not supported here.");
 }
 
@@ -1112,83 +1285,74 @@ static void run_mix_flow(void) {
     ui_text(6, 100, UI_DIM, "B = back"); wait_keys(KEY_B);
     return;
   }
-  char pathA[PATH_MAX], pathB[PATH_MAX];
-  Gen3Version verA = G3_VER_UNKNOWN, verB = G3_VER_UNKNOWN;
-  static BrEntry entA, entB;
-  if (!browse_two(pathA, &verA, &entA, pathB, &verB, &entB)) return;
+  static char        paths[MIX_MAX_SAVES][PATH_MAX];
+  static Gen3Version vers[MIX_MAX_SAVES];
+  static BrEntry     ents[MIX_MAX_SAVES];
+  int n = browse_multi(paths, vers, ents, MIX_MAX_SAVES);
+  if (n < 2) return;
 
-  log_line("=== RECORD MIX (%s mode) ===", config_get_quick_mode() ? "QUICK" : "regular");
-  log_save_identity("MIX SAVE1", pathA, game_tag(&entA), &entA);
-  log_save_identity("MIX SAVE2", pathB, game_tag(&entB), &entB);
-  if (entA.tid_public == entB.tid_public && strcmp(entA.trainer, entB.trainer) == 0)
-    log_line("MIX WARNING: SAVE1 & SAVE2 are the SAME trainer ('%s', TID %u) -- a secret "
-             "base cannot mix into its own owner, so nothing new will ever import.",
-             entA.trainer, (unsigned)entA.tid_public);
+  log_line("=== RECORD MIX (%s mode, %d saves) ===", config_get_quick_mode() ? "QUICK" : "regular", n);
+  for (int i = 0; i < n; i++) {
+    char tag[16]; siprintf(tag, "MIX SAVE%d", i + 1);
+    log_save_identity(tag, paths[i], game_tag(&ents[i]), &ents[i]);
+  }
+  for (int i = 0; i < n; i++)
+    for (int j = i + 1; j < n; j++)
+      if (ents[i].tid_public == ents[j].tid_public && strcmp(ents[i].trainer, ents[j].trainer) == 0)
+        log_line("MIX WARNING: SAVE%d & SAVE%d are the SAME trainer -- a base can't mix into "
+                 "its own owner, so that pair imports nothing.", i + 1, j + 1);
   log_flush_to_sd(LOG_PATH);
 
-  if (config_get_quick_mode()) {
-    quick_mix_flow(pathA, verA, &entA, pathB, verB, &entB);
-    return;
-  }
+  const char* cpaths[MIX_MAX_SAVES];
+  for (int i = 0; i < n; i++) cpaths[i] = paths[i];
 
-  /* Per-save team builder: pick up to 6 from the party AND/OR PC boxes (Phase 1).
-   * These explicit choices drive each save's registered base party; the omit
-   * masks are unused on this path (kept 0 for the call signature). */
-  u8 omitA = 0, omitB = 0;
-  static SbPartyChoice choiceA, choiceB;
-  if (!pick_two_teams(&entA, pathA, verA, &choiceA,
-                      &entB, pathB, verB, &choiceB)) return;
-  const SbPartyChoice* ovrA = &choiceA;
-  const SbPartyChoice* ovrB = &choiceB;
+  if (config_get_quick_mode()) { quick_mix_flow_multi(cpaths, vers, ents, n); return; }
+
+  /* Per-save sequential team picker (each pre-filled from its saved preset). Each
+   * save's choice is remembered (tp_update) as it's confirmed; tp_save'd after a
+   * successful commit. The omit masks are unused on the explicit-choice path. */
+  static SbPartyChoice choices[MIX_MAX_SAVES];
+  if (!pick_n_teams(ents, paths, vers, n, choices)) return;
+  const SbPartyChoice* ovrs[MIX_MAX_SAVES];
+  static uint8_t omits[MIX_MAX_SAVES];
+  for (int i = 0; i < n; i++) { ovrs[i] = &choices[i]; omits[i] = 0; }
 
   show_msg("Dry-run mixing...", "(nothing written)");
-  log_line("=== MIX2 dry-run: %s[%s] <-> %s[%s] ===",
-           pathA, ver_name(verA), pathB, ver_name(verB));
-  MixStats ab, ba;
-  SfStatus st = sf_mix_bidir(pathA, verA, omitA, pathB, verB, omitB, false, true,
-                             ovrA, ovrB, g_save, &ab, &ba);
-  log_line("mix2 dry-run: %s", st == SF_OK ? "PASS" : sf_status_str(st));
-  if (st == SF_OK) {
-    log_line("MIX 1<-2: imported %d, dup %d, host %d/20%s",
-             ab.imported, ab.duplicates, ab.host_used, ab.overflow ? " (OVERFLOW)" : "");
-    log_line("MIX 2<-1: imported %d, dup %d, host %d/20%s",
-             ba.imported, ba.duplicates, ba.host_used, ba.overflow ? " (OVERFLOW)" : "");
-    if (ab.imported == 0 && ba.imported == 0)
-      log_line("MIX note: 0 new bases either way -- these saves are already mixed (dup>0) "
-               "or are the same trainer; re-mixing imports nothing new (this is normal).");
-  }
+  log_line("=== MIX dry-run (%d saves) ===", n);
+  static MixStats stats[MIX_MAX_SAVES];
+  SfStatus st = sf_mix_multi(cpaths, vers, omits, ovrs, n, false, true, g_save, stats);
+  log_line("mix dry-run: %s", st == SF_OK ? "PASS" : sf_status_str(st));
+  if (st == SF_OK)
+    for (int i = 0; i < n; i++)
+      log_line("MIX SAVE%d<-others: imported %d, dup %d, host %d/20%s", i + 1,
+               stats[i].imported, stats[i].duplicates, stats[i].host_used, stats[i].overflow ? " (OVERFLOW)" : "");
   log_flush_to_sd(LOG_PATH);
   if (st != SF_OK) { result_screen("DRY-RUN FAILED", UI_WARN, sf_status_str(st), "Nothing written."); return; }
 
   ui_clear();
-  ui_text(6, 6, UI_TITLE, "DRY-RUN OK (untouched)");
+  ui_text(6, 4, UI_TITLE, "DRY-RUN OK (untouched)");
   char line[48];
-  siprintf(line, "1<-2: +%d new  dup %d  %d/20%s", ab.imported, ab.duplicates, ab.host_used, ab.overflow ? " FULL" : "");
-  ui_text(6, 28, UI_TEXT, line);
-  siprintf(line, "2<-1: +%d new  dup %d  %d/20%s", ba.imported, ba.duplicates, ba.host_used, ba.overflow ? " FULL" : "");
-  ui_text(6, 40, UI_TEXT, line);
-  ui_text(6, 64, UI_OK,   "A = COMMIT (writes both,");
-  ui_text(6, 76, UI_OK,   "    .bak each first)");
-  ui_text(6, 92, UI_WARN, "B = cancel");
+  for (int i = 0; i < n; i++) {
+    char nm[10]; ui_truncate(nm, ents[i].trainer[0] ? ents[i].trainer : "?", 8);
+    siprintf(line, "%d %-8s +%d new dup%d %d/20%s", i + 1, nm,
+             stats[i].imported, stats[i].duplicates, stats[i].host_used, stats[i].overflow ? " F" : "");
+    ui_text(6, 20 + i * 11, UI_TEXT, line);
+  }
+  ui_text(6, 20 + n * 11 + 6,  UI_OK,   "A = COMMIT (writes all, .bak)");
+  ui_text(6, 20 + n * 11 + 18, UI_WARN, "B = cancel");
   u16 c = wait_keys(KEY_A | KEY_B);
   if (c & KEY_B) return;
 
-  show_msg("Writing both saves...", NULL);
-  log_line("=== MIX2 commit ===");
-  SfStatus cst = sf_mix_bidir(pathA, verA, omitA, pathB, verB, omitB, true, true,
-                              ovrA, ovrB, g_save, NULL, NULL);
-  log_line("mix2 commit: %s", cst == SF_OK ? "OK" : sf_status_str(cst));
+  show_msg("Writing saves...", NULL);
+  log_line("=== MIX commit (%d saves) ===", n);
+  SfStatus cst = sf_mix_multi(cpaths, vers, omits, ovrs, n, true, true, g_save, NULL);
+  log_line("mix commit: %s", cst == SF_OK ? "OK" : sf_status_str(cst));
   log_flush_to_sd(LOG_PATH);
 
   if (cst == SF_OK) {
-    /* Remember each side's party selection so it pre-fills (greyscale) next time
-     * and QUICK MODE uses the real choices. Best-effort: a failed write just isn't
-     * remembered and never blocks the completed mix. */
-    remember_party_choice(0, &entA);
-    remember_party_choice(1, &entB);
-    tp_save(PREFS_PATH);
+    tp_save(PREFS_PATH);   /* each save's choice was tp_update'd in pick_one_team */
     play_jingle(SFX_SUCCESS, 45);
-    result_screen("MIX COMPLETE", UI_OK, "Both saves updated & backed up.",
+    result_screen("MIX COMPLETE", UI_OK, "All saves updated & backed up.",
                   "Load in-game; bases battleable.");
   } else {
     result_screen("COMMIT FAILED", UI_WARN, sf_status_str(cst), "Backups kept.");
