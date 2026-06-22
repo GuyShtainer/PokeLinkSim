@@ -507,7 +507,7 @@ static bool browse_two(char* pathA, Gen3Version* verA, BrEntry* outA,
         config_set_quick_mode(true); config_save(CONFIG_PATH);
       }
     }
-    else if (hit & KEY_B)    { if (!at_root()) { path_up(); browse_scan(); sel = 0; top = 0; persist_cwd(); } }
+    else if (hit & KEY_B)    { if (!at_root()) { path_up(); browse_scan(); sel = 0; top = 0; persist_cwd(); } else return false; }  /* B at root -> back to main menu */
     else if (hit & KEY_A) {
       BrEntry* e = br_entry(sel);
       if (!e) { if (!at_root()) { path_up(); browse_scan(); sel = 0; top = 0; persist_cwd(); } }
