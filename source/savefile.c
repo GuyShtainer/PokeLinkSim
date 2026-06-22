@@ -15,17 +15,16 @@ static uint8_t EWRAM_BSS s_sb1[G3_SAVEBLOCK1_BYTES];  /* reassembled SaveBlock1 
 static uint8_t EWRAM_BSS s_snap[2 * G3_SECTOR_SIZE];  /* snapshot of touched sectors */
 static uint8_t EWRAM_BSS s_cmp[4096];                 /* re-read compare chunk */
 
-/* Secret-base working sets (real SecretBase[] so they're naturally aligned).
- * s_basesA/B  : each save's ORIGINAL 20 bases (post own-party regen), captured
- *               before either file is written, so both mix directions read
- *               un-mixed inputs.
- * s_mergedA/B : each direction's merge output.
- * s_friend    : the mutable friend-scratch recordmix_run consumes per direction. */
+/* Secret-base working sets (real SecretBase[] so they're naturally aligned). Mixing
+ * supports 2..SF_MAX_MIX saves at once (the real games mix up to 4 players).
+ * s_bases[i] : each picked save's ORIGINAL 20 bases (post own-party regen), captured
+ *              before any file is written, so every save merges from un-mixed inputs.
+ * s_merged   : the current host's merge output (reused per save, processed in turn).
+ * s_friend   : mutable friend-scratch recordmix_run_multi consumes per friend. */
+#define SF_MAX_MIX 4
+static SecretBase EWRAM_BSS s_bases[SF_MAX_MIX][G3_SECRET_BASES_COUNT];
+static SecretBase EWRAM_BSS s_merged[G3_SECRET_BASES_COUNT];
 static SecretBase EWRAM_BSS s_friend[G3_SECRET_BASES_COUNT];
-static SecretBase EWRAM_BSS s_basesA[G3_SECRET_BASES_COUNT];
-static SecretBase EWRAM_BSS s_basesB[G3_SECRET_BASES_COUNT];
-static SecretBase EWRAM_BSS s_mergedA[G3_SECRET_BASES_COUNT];
-static SecretBase EWRAM_BSS s_mergedB[G3_SECRET_BASES_COUNT];
 
 const char* sf_status_str(SfStatus s) {
   switch (s) {
@@ -432,93 +431,99 @@ static void log_dir(const char* dir, const MixStats* s) {
            s->host_base_evicted ? " evict-own" : "", s->overflow ? " OVERFLOW" : "");
 }
 
+/* Build s_merged = save `i`'s bases merged with every OTHER picked save's bases
+ * (from the un-mixed snapshots), via the faithful multi-friend engine. */
+static void mix_merge_host(int i, int n, const Gen3Version vers[], const PlayerIdentity id[],
+                           MixStats* out) {
+  memcpy(s_merged, s_bases[i], sizeof(s_merged));
+  const SecretBase* friends[SF_MAX_MIX];
+  Gen3Version fvers[SF_MAX_MIX];
+  int nf = 0;
+  for (int j = 0; j < n; j++)
+    if (j != i) { friends[nf] = s_bases[j]; fvers[nf] = vers[j]; nf++; }
+  MixStats tmp;
+  recordmix_run_multi(s_merged, &id[i], vers[i], friends, fvers, nf, s_friend, out ? out : &tmp);
+}
+
+/* Mix 2..SF_MAX_MIX saves' secret bases together (the real games mix up to 4
+ * players): every picked save receives every OTHER picked save's bases, and ALL
+ * are written. `commit==false` is a dry run (validate every spliced image, nothing
+ * written); `commit==true` writes each (backed up first unless make_backup is
+ * false). All saves are validated BEFORE any is written. `ovrs[i]` optionally gives
+ * save i's explicit base party (NULL = its live-party regen, omits[i] applied).
+ * stats_out (optional, n entries) reports each save's incoming-merge stats. */
+SfStatus sf_mix_multi(const char* const paths[], const Gen3Version vers[], const uint8_t omits[],
+                      const SbPartyChoice* const ovrs[], int n,
+                      bool commit, bool make_backup, uint8_t* work, MixStats stats_out[]) {
+  if (n < 2 || n > SF_MAX_MIX) return SF_ERR_LAYOUT;
+  /* the secret-base array must live in SaveBlock1 sections 2..3 for every game */
+  for (int i = 0; i < n; i++) {
+    int f, l;
+    gen3_sb1_touch_sections(vers[i], &f, &l);
+    if (f != 2 || l != 3) return SF_ERR_LAYOUT;
+  }
+
+  /* --- Phase 1: snapshot EVERY save's bases (post own-party regen) before any
+   *     write, so each save merges from un-mixed inputs. --- */
+  PlayerIdentity id[SF_MAX_MIX];
+  Gen3SaveInfo info;
+  for (int i = 0; i < n; i++) {
+    SfStatus st = load_save_bases(paths[i], vers[i], omits[i], ovrs ? ovrs[i] : NULL,
+                                  work, &info, &id[i], s_bases[i]);
+    if (st != SF_OK) { log_line("mix: load SAVE%d failed (%s)", i + 1, sf_status_str(st)); return st; }
+    /* The team SAVE i shares into the others' bases (regenerated from its live party).
+     * If a base looks stale in-game, compare here -- a mismatch means that .sav
+     * wasn't saved in-game after the party changed. */
+    log_line("mix: SAVE%d slot=%d shares base team [%u %u %u %u %u %u]", i + 1, info.slot,
+             (unsigned)s_bases[i][0].species[0], (unsigned)s_bases[i][0].species[1],
+             (unsigned)s_bases[i][0].species[2], (unsigned)s_bases[i][0].species[3],
+             (unsigned)s_bases[i][0].species[4], (unsigned)s_bases[i][0].species[5]);
+  }
+
+  /* --- Phase 2: merge + validate EVERY save's spliced image (no writes). --- */
+  for (int i = 0; i < n; i++) {
+    MixStats st_i;
+    mix_merge_host(i, n, vers, id, &st_i);
+    if (stats_out) stats_out[i] = st_i;
+    char tag[20]; siprintf(tag, "SAVE%d<-others", i + 1);
+    log_dir(tag, &st_i);
+    SfStatus st = splice_one(paths[i], vers[i], s_merged, work, false, make_backup);
+    if (st != SF_OK) return st;
+  }
+
+  if (!commit) { log_line("mix: DRY-RUN OK - no save modified"); return SF_OK; }
+
+  /* --- Phase 3: all validated -> write each (re-merge since s_merged is reused;
+   *     deterministic, so each rebuild matches its dry-run). --- */
+  for (int i = 0; i < n; i++) {
+    mix_merge_host(i, n, vers, id, NULL);
+    SfStatus st = splice_one(paths[i], vers[i], s_merged, work, true, make_backup);
+    if (st != SF_OK) {
+      log_line("mix: SAVE%d write failed%s", i + 1,
+               i > 0 ? (make_backup ? " (earlier saves committed; they have .bak)"
+                                    : " (earlier saves committed, NO BACKUP)") : "");
+      return st;
+    }
+  }
+  log_line("mix: COMMIT OK - %d saves updated", n);
+  return SF_OK;
+}
+
+/* 2-save convenience wrapper (unchanged signature) over sf_mix_multi. */
 SfStatus sf_mix_bidir(const char* pathA, Gen3Version verA, uint8_t omitA,
                       const char* pathB, Gen3Version verB, uint8_t omitB,
                       bool commit, bool make_backup,
                       const SbPartyChoice* ovrA, const SbPartyChoice* ovrB,
                       uint8_t* work, MixStats* statsAtoB, MixStats* statsBtoA) {
-  /* the secret-base array must live in SaveBlock1 sections 2..3 for both games */
-  int f, l;
-  gen3_sb1_touch_sections(verA, &f, &l); if (f != 2 || l != 3) return SF_ERR_LAYOUT;
-  gen3_sb1_touch_sections(verB, &f, &l); if (f != 2 || l != 3) return SF_ERR_LAYOUT;
-
-  /* --- Phase 1: snapshot BOTH saves' bases (post own-party regen, minus any
-   *     user-omitted party mons) before any write, so each direction mixes from
-   *     un-mixed inputs. --- */
-  Gen3SaveInfo infoA, infoB;
-  PlayerIdentity idA, idB;
-  SfStatus st = load_save_bases(pathA, verA, omitA, ovrA, work, &infoA, &idA, s_basesA);
-  if (st != SF_OK) { log_line("mix: load A failed (%s)", sf_status_str(st)); return st; }
-  st = load_save_bases(pathB, verB, omitB, ovrB, work, &infoB, &idB, s_basesB);
-  if (st != SF_OK) { log_line("mix: load B failed (%s)", sf_status_str(st)); return st; }
-  log_line("mix: A slot=%d, B slot=%d snapshotted", infoA.slot, infoB.slot);
-  /* Log the team each save will SHARE into the other's base (regenerated from its
-   * live party). If a base's team looks stale in-game, compare it to this -- a
-   * mismatch means that save's .sav wasn't saved in-game after the party changed. */
-  log_line("mix: SAVE1 base team species [%u %u %u %u %u %u]",
-           (unsigned)s_basesA[0].species[0], (unsigned)s_basesA[0].species[1],
-           (unsigned)s_basesA[0].species[2], (unsigned)s_basesA[0].species[3],
-           (unsigned)s_basesA[0].species[4], (unsigned)s_basesA[0].species[5]);
-  log_line("mix: SAVE2 base team species [%u %u %u %u %u %u]",
-           (unsigned)s_basesB[0].species[0], (unsigned)s_basesB[0].species[1],
-           (unsigned)s_basesB[0].species[2], (unsigned)s_basesB[0].species[3],
-           (unsigned)s_basesB[0].species[4], (unsigned)s_basesB[0].species[5]);
-
-  /* --- Phase 2: merge BOTH directions in RAM from the originals. --- */
-  MixStats sab, sba;
-  memcpy(s_mergedA, s_basesA, sizeof(s_mergedA));
-  memcpy(s_friend,  s_basesB, sizeof(s_friend));
-  if (!recordmix_run(s_mergedA, &idA, verA, s_friend, verB, &sab)) return SF_ERR_LAYOUT;
-  memcpy(s_mergedB, s_basesB, sizeof(s_mergedB));
-  memcpy(s_friend,  s_basesA, sizeof(s_friend));
-  if (!recordmix_run(s_mergedB, &idB, verB, s_friend, verA, &sba)) return SF_ERR_LAYOUT;
-  log_dir("A<-B", &sab);
-  log_dir("B<-A", &sba);
-  /* Confirm each save actually IMPORTED the partner's refreshed team (match the
-   * partner's base by its location id). SAVE1's "now has partner base team" should
-   * equal SAVE2's shared team above (and vice versa); if it instead shows an old
-   * team, the host's stale copy won the dedup. */
-  {
-    int ai = -1, bi = -1;
-    for (int i = 0; i < G3_SECRET_BASES_COUNT; i++) {
-      if (s_mergedA[i].secretBaseId && s_mergedA[i].secretBaseId == s_basesB[0].secretBaseId) ai = i;
-      if (s_mergedB[i].secretBaseId && s_mergedB[i].secretBaseId == s_basesA[0].secretBaseId) bi = i;
-    }
-    if (ai >= 0)
-      log_line("mix: SAVE1 now has partner base team [%u %u %u %u %u %u]",
-               (unsigned)s_mergedA[ai].species[0], (unsigned)s_mergedA[ai].species[1],
-               (unsigned)s_mergedA[ai].species[2], (unsigned)s_mergedA[ai].species[3],
-               (unsigned)s_mergedA[ai].species[4], (unsigned)s_mergedA[ai].species[5]);
-    else log_line("mix: SAVE1 has no base at partner location %u", (unsigned)s_basesB[0].secretBaseId);
-    if (bi >= 0)
-      log_line("mix: SAVE2 now has partner base team [%u %u %u %u %u %u]",
-               (unsigned)s_mergedB[bi].species[0], (unsigned)s_mergedB[bi].species[1],
-               (unsigned)s_mergedB[bi].species[2], (unsigned)s_mergedB[bi].species[3],
-               (unsigned)s_mergedB[bi].species[4], (unsigned)s_mergedB[bi].species[5]);
-    else log_line("mix: SAVE2 has no base at partner location %u", (unsigned)s_basesA[0].secretBaseId);
-  }
-  if (statsAtoB) *statsAtoB = sab;
-  if (statsBtoA) *statsBtoA = sba;
-
-  /* --- Phase 3: validate BOTH spliced images (no writes yet). --- */
-  st = splice_one(pathA, verA, s_mergedA, work, false, make_backup);
-  if (st != SF_OK) return st;
-  st = splice_one(pathB, verB, s_mergedB, work, false, make_backup);
-  if (st != SF_OK) return st;
-
-  if (!commit) {
-    log_line("mix: DRY-RUN OK - neither save modified");
-    return SF_OK;
-  }
-
-  /* --- Phase 4: both validated -> write both (each backed up first unless
-   *     make_backup is false, i.e. quick mode). --- */
-  st = splice_one(pathA, verA, s_mergedA, work, true, make_backup);
-  if (st != SF_OK) return st;
-  st = splice_one(pathB, verB, s_mergedB, work, true, make_backup);
-  if (st != SF_OK) { log_line("mix: B write failed AFTER A committed%s", make_backup ? " (A has .bak)" : " (NO BACKUP)"); return st; }
-  log_line("mix: COMMIT OK - both saves updated");
-  return SF_OK;
+  const char* paths[2]          = { pathA, pathB };
+  Gen3Version vers[2]           = { verA, verB };
+  uint8_t omits[2]              = { omitA, omitB };
+  const SbPartyChoice* ovrs[2]  = { ovrA, ovrB };
+  MixStats stats[2];
+  SfStatus st = sf_mix_multi(paths, vers, omits, ovrs, 2, commit, make_backup, work, stats);
+  if (statsAtoB) *statsAtoB = stats[0];   /* SAVE1 <- others (== A<-B) */
+  if (statsBtoA) *statsBtoA = stats[1];   /* SAVE2 <- others (== B<-A) */
+  return st;
 }
 
 /* ===================== genuine trade ==================================== */

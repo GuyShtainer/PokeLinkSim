@@ -88,6 +88,16 @@ SfStatus sf_mix_bidir(const char* pathA, Gen3Version verA, uint8_t omitA,
                       const SbPartyChoice* ovrA, const SbPartyChoice* ovrB,
                       uint8_t* work, MixStats* statsAtoB, MixStats* statsBtoA);
 
+/* Mix 2..4 saves' secret bases together (real games mix up to 4 players): every
+ * picked save receives every OTHER picked save's bases, and all are written. Same
+ * dry-run/commit/backup/verified-write safety as sf_mix_bidir (all validated before
+ * any write). `paths/vers/omits` are n-entry arrays; `ovrs` (or NULL) gives each
+ * save's explicit base party (ovrs[i] NULL = its live-party regen with omits[i]).
+ * `stats_out` (optional, n entries) reports each save's incoming-merge stats. */
+SfStatus sf_mix_multi(const char* const paths[], const Gen3Version vers[], const uint8_t omits[],
+                      const SbPartyChoice* const ovrs[], int n,
+                      bool commit, bool make_backup, uint8_t* work, MixStats stats_out[]);
+
 /* Genuine 1-for-1 trade between two saves (any Gen-3 game incl. FRLG): the mon at
  * `locA` of A swaps with the mon at `locB` of B. Each endpoint may be a live party
  * slot OR a PC-box slot (see TradeLoc), in any combination; the received mon lands

@@ -121,6 +121,16 @@ bool recordmix_run(SecretBase* host,
                    Gen3Version friend_version,
                    MixStats* stats);
 
+/* Multi-friend record mix (faithful to the real up-to-4-player ReceiveSecretBasesData):
+ * merge each of `n_friends` friend arrays into `host` in turn, then finalize ONCE
+ * (single numSecretBasesReceived bump + one sort across all friends). Each friend is
+ * consumed through `scratch` (a caller-owned SecretBase[G3_SECRET_BASES_COUNT] buffer)
+ * so the caller's friend snapshots are preserved for the other hosts. friends[k] and
+ * friend_versions[k] for k in [0,n_friends). Returns true on valid inputs. */
+bool recordmix_run_multi(SecretBase* host, const PlayerIdentity* host_id, Gen3Version host_version,
+                         const SecretBase* const* friends, const Gen3Version* friend_versions,
+                         int n_friends, SecretBase* scratch, MixStats* stats);
+
 /* Replicate SetPlayerSecretBaseParty: rebuild a base's own party snapshot from
  * the player's LIVE party (decrypted via gen3_read_live_party). Zeroes all 6
  * slots, then writes the kept mons compacted to the front. No-op when the base

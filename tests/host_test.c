@@ -236,6 +236,51 @@ static void test_merge(void) {
     assert(find_by_trainer(h, 2222, "FRND") == -1);
   }
 
+  /* ---- MULTI-FRIEND (3-4 player) merge: import every friend, bump counter ONCE ---- */
+  {
+    SecretBase h[20], f1[20], f2[20], f3[20], scratch[20];
+    memset(h, 0, sizeof(h));  memset(f1, 0, sizeof(f1));
+    memset(f2, 0, sizeof(f2)); memset(f3, 0, sizeof(f3));
+    h[0]  = mk(10, 0, 1111, "HOST", 5, 0, SB_REG_UNREGISTERED);
+    f1[0] = mk(20, 1, 2222, "FRNDA", 0, 1, SB_REG_UNREGISTERED);  /* battled today */
+    f2[0] = mk(30, 0, 3333, "FRNDB", 0, 1, SB_REG_UNREGISTERED);
+    f3[0] = mk(40, 1, 4444, "FRNDC", 0, 1, SB_REG_UNREGISTERED);
+
+    const SecretBase* friends[3] = { f1, f2, f3 };
+    Gen3Version fvers[3] = { G3_VER_EMERALD, G3_VER_RS, G3_VER_EMERALD };
+    MixStats st;
+    assert(recordmix_run_multi(h, &host, G3_VER_EMERALD, friends, fvers, 3, scratch, &st));
+
+    /* all three friends' bases imported (host's own + 3 = 4 used) */
+    assert(count_used(h) == 4);
+    int a = find_by_trainer(h, 2222, "FRNDA");
+    int b = find_by_trainer(h, 3333, "FRNDB");
+    int c = find_by_trainer(h, 4444, "FRNDC");
+    assert(a > 0 && b > 0 && c > 0);
+    /* incoming bases arrive battleable (friend-side battledOwnerToday clear) */
+    assert(sb_battledToday(&h[a]) == 0 && sb_battledToday(&h[b]) == 0 && sb_battledToday(&h[c]) == 0);
+    /* counter bumped exactly ONCE for the whole multi-friend session (5 -> 6) */
+    assert(h[0].numSecretBasesReceived == 6);
+    assert(st.imported == 3);
+
+    /* friend snapshots must be UNTOUCHED (consumed via scratch, not in place) */
+    assert(f1[0].secretBaseId == 20 && f2[0].secretBaseId == 30 && f3[0].secretBaseId == 40);
+
+    /* equivalence: multi with a single friend == recordmix_run with that friend */
+    SecretBase ha[20], hb[20], onef[20], sc[20];
+    memset(ha, 0, sizeof(ha)); memset(hb, 0, sizeof(hb));
+    ha[0] = mk(10, 0, 1111, "HOST", 2, 0, SB_REG_UNREGISTERED);
+    hb[0] = mk(10, 0, 1111, "HOST", 2, 0, SB_REG_UNREGISTERED);
+    SecretBase fa[20]; memset(fa, 0, sizeof(fa));
+    fa[0] = mk(25, 1, 5555, "SOLO", 3, 1, SB_REG_UNREGISTERED);
+    memcpy(onef, fa, sizeof(onef));
+    recordmix_run(ha, &host, G3_VER_EMERALD, fa, G3_VER_EMERALD, NULL);
+    const SecretBase* one[1] = { onef };
+    Gen3Version ov[1] = { G3_VER_EMERALD };
+    recordmix_run_multi(hb, &host, G3_VER_EMERALD, one, ov, 1, sc, NULL);
+    assert(memcmp(ha, hb, sizeof(ha)) == 0);     /* 1-friend multi == single-friend run */
+  }
+
   printf("MERGE TESTS PASSED\n");
 }
 

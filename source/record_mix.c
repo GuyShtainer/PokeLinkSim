@@ -288,31 +288,29 @@ void sb_set_party_from_choice(SecretBase* base, const SbPartyChoice* c) {
   }
 }
 
-bool recordmix_run(SecretBase* host,
-                   const PlayerIdentity* host_id,
-                   Gen3Version host_version,
-                   SecretBase* friend,
-                   Gen3Version friend_version,
-                   MixStats* stats) {
-  if (!host || !host_id || !friend) return false;
-
+/* Set host identity/language + snapshot the host's used-base count (for stats). */
+static void recordmix_begin(SecretBase* host, const PlayerIdentity* host_id,
+                            Gen3Version host_version, MixStats* stats, int* used_before) {
   s_stats   = stats;
   s_host_id = host_id;
-  /* GAME_LANGUAGE: only Emerald uses the per-record language byte (RS treats
-   * 0x0D as padding), so derive it from the host's own base on Emerald and
-   * fall back to English everywhere else. */
+  /* GAME_LANGUAGE: only Emerald uses the per-record language byte (RS treats 0x0D as
+   * padding), so derive it from the host's own base on Emerald, English elsewhere. */
   s_host_language = (host_version == G3_VER_EMERALD && host[0].secretBaseId != 0)
                       ? host[0].language : LANGUAGE_ENGLISH;
-
-  int used_before = 0;
+  *used_before = 0;
   if (stats) {
     memset(stats, 0, sizeof(*stats));
-    for (int i = 0; i < SB_COUNT; i++) if (host[i].secretBaseId) used_before++;
+    for (int i = 0; i < SB_COUNT; i++) if (host[i].secretBaseId) (*used_before)++;
   }
+}
 
-  SaveRecordMixBases(host, friend, friend_version);
-
-  /* Re-register bases flagged during dedup, then sort and demote NEW->UNREG. */
+/* Finalize ONCE after all friends are merged: re-register dedup-flagged bases, sort
+ * registered to the front, demote the transient NEW status, bump the received
+ * counter once (matches the real ReceiveSecretBasesData tail).
+ * battledOwnerToday is NEVER cleared on the host array here -- only on friends'
+ * incoming bases (ClearDuplicateOwnedSecretBases); the game re-enables battling once
+ * per RTC day, not per mix, so a re-mixed already-owned base keeps its flag. */
+static void recordmix_finalize(SecretBase* host) {
   for (int i = 1; i < SB_COUNT; i++) {
     if (sb_toRegister(&host[i])) {
       sb_set_registryStatus(&host[i], SB_REG_REGISTERED);
@@ -323,17 +321,11 @@ bool recordmix_run(SecretBase* host,
   for (int i = 1; i < SB_COUNT; i++)
     if (sb_registryStatus(&host[i]) == SB_REG_NEW)
       sb_set_registryStatus(&host[i], SB_REG_UNREGISTERED);
-
-  /* NOTE on battledOwnerToday: the real ReceiveSecretBasesData NEVER clears it on
-   * the host's own array during a mix -- only on the FRIEND's incoming bases (done
-   * above in ClearDuplicateOwnedSecretBases). The game re-enables battling once per
-   * RTC day (FLAG_DAILY_SECRET_BASE / GetSecretBaseOwnerAndState), not per mix. So a
-   * re-mixed base you already own keeps its flag until the next day -- intended. */
-
-  /* Bump the host's own received counter (saturating at 0xFFFF). */
   if (host[0].secretBaseId != 0 && host[0].numSecretBasesReceived != 0xFFFF)
     host[0].numSecretBasesReceived++;
+}
 
+static void recordmix_end(SecretBase* host, MixStats* stats, int used_before) {
   if (stats) {
     int used_after = 0;
     for (int i = 0; i < SB_COUNT; i++) if (host[i].secretBaseId) used_after++;
@@ -341,8 +333,41 @@ bool recordmix_run(SecretBase* host,
     stats->imported  = used_after - used_before;
     if (stats->imported < 0) stats->imported = 0;
   }
-
   s_stats = NULL;
   s_host_id = NULL;
+}
+
+bool recordmix_run(SecretBase* host,
+                   const PlayerIdentity* host_id,
+                   Gen3Version host_version,
+                   SecretBase* friend,
+                   Gen3Version friend_version,
+                   MixStats* stats) {
+  if (!host || !host_id || !friend) return false;
+  int used_before;
+  recordmix_begin(host, host_id, host_version, stats, &used_before);
+  SaveRecordMixBases(host, friend, friend_version);
+  recordmix_finalize(host);
+  recordmix_end(host, stats, used_before);
+  return true;
+}
+
+bool recordmix_run_multi(SecretBase* host, const PlayerIdentity* host_id, Gen3Version host_version,
+                         const SecretBase* const* friends, const Gen3Version* friend_versions,
+                         int n_friends, SecretBase* scratch, MixStats* stats) {
+  if (!host || !host_id || !friends || !friend_versions || !scratch || n_friends < 0) return false;
+  int used_before;
+  recordmix_begin(host, host_id, host_version, stats, &used_before);
+  /* Merge each friend's bases into the host in turn, then finalize ONCE -- the
+   * faithful up-to-4-player flow (one counter bump, one sort across all friends).
+   * Each friend is consumed via `scratch` (SaveRecordMixBases mutates it) so the
+   * caller's originals survive for the other hosts. */
+  for (int f = 0; f < n_friends; f++) {
+    if (!friends[f]) continue;
+    memcpy(scratch, friends[f], (size_t)SB_COUNT * sizeof(SecretBase));
+    SaveRecordMixBases(host, scratch, friend_versions[f]);
+  }
+  recordmix_finalize(host);
+  recordmix_end(host, stats, used_before);
   return true;
 }
