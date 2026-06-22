@@ -168,6 +168,24 @@ static void test_merge(void) {
     assert(h[xi].secretBaseId == 30);           /* friend's older copy discarded */
   }
   {
+    /* re-mix an ALREADY-OWNED base you battled today (host copy wins the dedup):
+     * it must become battleable again, else you can never re-battle after mixing
+     * the same saves twice (the reported can't-re-battle bug). */
+    SecretBase h[20], f[20];
+    memset(h, 0, sizeof(h));
+    memset(f, 0, sizeof(f));
+    h[0] = mk(10, 0, 1111, "HOST", 9, 0, SB_REG_UNREGISTERED);
+    h[1] = mk(30, 1, 3333, "XTRN", 9, 1, SB_REG_UNREGISTERED); /* owned, BATTLED today, newer */
+    f[0] = mk(20, 1, 2222, "FRND", 0, 0, SB_REG_UNREGISTERED);
+    f[1] = mk(31, 1, 3333, "XTRN", 4, 0, SB_REG_UNREGISTERED); /* friend's older copy */
+
+    recordmix_run(h, &host, G3_VER_EMERALD, f, G3_VER_EMERALD, NULL);
+    int xi = find_by_trainer(h, 3333, "XTRN");
+    assert(xi >= 0);
+    assert(h[xi].numSecretBasesReceived == 9);  /* kept the host's newer copy */
+    assert(sb_battledToday(&h[xi]) == 0);       /* re-battleable after the mix */
+  }
+  {
     /* reverse: friend's copy is newer -> it replaces the host's */
     SecretBase h[20], f[20];
     memset(h, 0, sizeof(h));
