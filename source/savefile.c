@@ -168,9 +168,19 @@ SfStatus sf_write_verified(const char* path, const uint8_t* buf, uint32_t len) {
   f_close(&f);
   if (!ok) { f_unlink(tmp); return SF_ERR_VERIFY; }
 
-  /* 3) swap into place (original only disappears once temp is verified) */
-  f_unlink(path); /* ignore error if absent */
-  if (f_rename(tmp, path) != FR_OK) return SF_ERR_RENAME;
+  /* 3) swap into place via rename-aside: move the original to "<path>.old", rename
+   *    the verified temp into place, then drop the old. The original is NEVER
+   *    unlinked before the new file exists, so an interrupted/failed rename (e.g. a
+   *    reboot before the FAT flushes) can't lose the .sav -- it survives at .old. */
+  char old[SF_PATH_MAX];
+  siprintf(old, "%s.old", path);
+  f_unlink(old);                              /* clear any stale .old */
+  FRESULT moved = f_rename(path, old);        /* aside the original (FR_NO_FILE if absent) */
+  if (f_rename(tmp, path) != FR_OK) {
+    if (moved == FR_OK) f_rename(old, path);  /* restore the original on failure */
+    return SF_ERR_RENAME;
+  }
+  if (moved == FR_OK) f_unlink(old);          /* committed -> drop the saved original */
   return SF_OK;
 }
 

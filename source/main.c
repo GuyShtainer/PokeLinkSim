@@ -398,10 +398,10 @@ static void render_save_panel(int px, int py, int ph, const BrEntry* e, bool act
 static bool quick_enable_confirm(void) {
   ui_clear();
   ui_text(6,  8, UI_DANGER, "ENABLE QUICK MIX?");
-  ui_text(6, 28, UI_TEXT,   "Uses each save's saved");
-  ui_text(6, 40, UI_TEXT,   "team preset, skips picking,");
-  ui_text(6, 52, UI_DANGER, "makes NO BACKUP, overwrites");
-  ui_text(6, 64, UI_DANGER, "both saves, then reboots.");
+  ui_text(6, 28, UI_TEXT,   "Uses each save's saved team");
+  ui_text(6, 40, UI_TEXT,   "preset, skips picking, backs");
+  ui_text(6, 52, UI_TEXT,   "up each save (.bak), mixes,");
+  ui_text(6, 64, UI_WARN,   "then reboots to flashcart.");
   ui_text(6, 90, UI_OK,     "A = enable");
   ui_text(6,102, UI_WARN,   "B = keep it off");
   return (wait_keys(KEY_A | KEY_B) & KEY_A) != 0;
@@ -486,7 +486,8 @@ static int browse_multi(char paths[][PATH_MAX], Gen3Version vers[], BrEntry ents
         ui_text(RP_X + 3, BP_Y + 15 + i * 11, UI_OK, line);
       }
       if (n == 0) ui_text(RP_X + 3, BP_Y + 15, UI_DIM, "A = add a save");
-      ui_text(2, FOOT_Y, UI_DIM, n >= 2 ? "A +/-  START mix  SEL test  B" : "A add  SEL test  B back");
+      ui_text(2, FOOT_Y, UI_DIM, n >= 2 ? "A +/- START mix SEL test B"
+                                        : "A add  START quick on/off  B");
       dirty = false;
     }
 
@@ -503,7 +504,14 @@ static int browse_multi(char paths[][PATH_MAX], Gen3Version vers[], BrEntry ents
     else if (hit & KEY_L)     { sel = 0; }
     else if (hit & KEY_R)     { sel = rows ? rows - 1 : 0; }
     else if (hit & KEY_SELECT){ run_self_test(br_entry(sel)); }
-    else if (hit & KEY_START) { if (n >= 2) return n; }
+    else if (hit & KEY_START) {
+      if (n >= 2) return n;                                    /* >=2 picked -> begin the mix */
+      else if (config_get_quick_mode()) {                      /* else toggle quick mode (as before) */
+        config_set_quick_mode(false); config_save(CONFIG_PATH);
+      } else if (quick_enable_confirm()) {                     /* turning ON needs the danger confirm */
+        config_set_quick_mode(true); config_save(CONFIG_PATH);
+      }
+    }
     else if (hit & KEY_B)     { if (!at_root()) { path_up(); browse_scan(); sel = 0; top = 0; persist_cwd(); } else return 0; }
     else if (hit & KEY_A) {
       BrEntry* e = br_entry(sel);
@@ -1034,9 +1042,9 @@ static bool quick_confirm_multi(const BrEntry ents[], int n) {
     ui_text(6, 22 + i * 10, UI_TEXT, line);
   }
   ui_text(6, 72,  UI_DIM,    "Uses saved team presets.");
-  ui_text(6, 92,  UI_DANGER, "DANGER: NO BACKUP is made.");
-  ui_text(6, 104, UI_DANGER, "All saves overwritten -");
-  ui_text(6, 116, UI_DANGER, "there is NO undo.");
+  ui_text(6, 92,  UI_WARN,   "Skips picking, mixes all,");
+  ui_text(6, 104, UI_WARN,   "backs up each (.bak), then");
+  ui_text(6, 116, UI_WARN,   "reboots to the flashcart.");
   ui_text(6, 138, UI_OK,   "A = mix now    B = cancel");
   u16 c = wait_keys(KEY_A | KEY_B);
   return (c & KEY_A) != 0;
@@ -1046,11 +1054,14 @@ static void quick_mix_flow_multi(const char* paths[], Gen3Version vers[], const 
   if (!quick_confirm_multi(ents, n)) return;
   static uint8_t omits[MIX_MAX_SAVES];
   for (int i = 0; i < n; i++) omits[i] = omit_from_prefs(&ents[i], paths[i]);
-  show_msg("Quick mixing...", "(NO backup!)");
-  log_line("=== QUICK MIX (no backup, %d saves) ===", n);
+  show_msg("Quick mixing...", "(backing up first)");
+  log_line("=== QUICK MIX (%d saves) ===", n);
   for (int i = 0; i < n; i++) log_line("QUICK SAVE%d omit mask 0x%02x", i + 1, (unsigned)omits[i]);
   static MixStats qstats[MIX_MAX_SAVES];
-  SfStatus cst = sf_mix_multi(paths, vers, omits, NULL, n, true /*commit*/, false /*no backup*/, g_save, qstats);
+  /* make_backup=TRUE: quick mode now ALWAYS makes an immutable .bak first (it used
+   * to skip it, which could lose a save if a write failed). Quick = skip the picker
+   * + reboot; it never skips the backup anymore. */
+  SfStatus cst = sf_mix_multi(paths, vers, omits, NULL, n, true /*commit*/, true /*make_backup*/, g_save, qstats);
   log_line("quick mix: %s", cst == SF_OK ? "OK" : sf_status_str(cst));
   if (cst == SF_OK)
     for (int i = 0; i < n; i++)
@@ -1058,18 +1069,18 @@ static void quick_mix_flow_multi(const char* paths[], Gen3Version vers[], const 
                qstats[i].imported, qstats[i].duplicates, qstats[i].host_used, qstats[i].overflow ? " (OVERFLOW)" : "");
   log_flush_to_sd(LOG_PATH);
   if (cst != SF_OK) {
-    result_screen("QUICK MIX FAILED", UI_DANGER, sf_status_str(cst), "Saves may be unmodified.");
+    result_screen("QUICK MIX FAILED", UI_DANGER, sf_status_str(cst), "Backups kept (.bak).");
     return;
   }
   ui_clear();
-  ui_text(6, 60, UI_OK,   "MIX COMPLETE (no backup)");
+  ui_text(6, 60, UI_OK,   "MIX COMPLETE (backed up)");
   ui_text(6, 78, UI_TEXT, "Rebooting to flashcart...");
   sfx_play(SFX_SUCCESS);
   for (int i = 0; i < 120; i++) { vsync(); sfx_tick(); }   /* ~2s so the message is seen */
   sfx_silence();
   flashcartio_reboot();                     /* no return on Omega/EverDrive */
   /* Only reached if reboot is unsupported (no/unknown cart). */
-  result_screen("MIX COMPLETE", UI_OK, "All saves updated (no backup).",
+  result_screen("MIX COMPLETE", UI_OK, "All saves updated & backed up.",
                 "Reboot-to-menu not supported here.");
 }
 
